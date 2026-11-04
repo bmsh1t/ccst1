@@ -1,0 +1,604 @@
+{
+  "status": "passed",
+  "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+  "owner_unchanged": true,
+  "elapsed_seconds": 18.034,
+  "compact_boundaries": [
+    {
+      "type": "system",
+      "subtype": "compact_boundary",
+      "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+      "uuid": "c351708f-a5cd-42d5-99d9-ba5f4a6b2146",
+      "compact_metadata": {
+        "trigger": "manual",
+        "pre_tokens": 5020,
+        "post_tokens": 17368,
+        "cumulative_dropped_tokens": 0,
+        "duration_ms": 19,
+        "preserved_segment": {
+          "head_uuid": "d256d571-69eb-48a5-8f52-ddb3bbf02010",
+          "anchor_uuid": "1ae1a947-1ee4-4432-bc0f-73e4d498963e",
+          "tail_uuid": "b082f2a6-7d29-4b40-92e4-b5b9afb64d39"
+        },
+        "preserved_messages": {
+          "anchor_uuid": "1ae1a947-1ee4-4432-bc0f-73e4d498963e",
+          "uuids": [
+            "d256d571-69eb-48a5-8f52-ddb3bbf02010",
+            "54c71306-4f99-465e-ab4f-622274333608",
+            "b082f2a6-7d29-4b40-92e4-b5b9afb64d39"
+          ],
+          "all_uuids": [
+            "d256d571-69eb-48a5-8f52-ddb3bbf02010",
+            "54c71306-4f99-465e-ab4f-622274333608",
+            "b082f2a6-7d29-4b40-92e4-b5b9afb64d39"
+          ]
+        }
+      },
+      "logical_parent_uuid": "b082f2a6-7d29-4b40-92e4-b5b9afb64d39"
+    }
+  ],
+  "requests": 20,
+  "tool_calls": {
+    "entry": 3,
+    "continue": 2,
+    "after_compact": 2,
+    "continue_restart": 2
+  },
+  "inference": false,
+  "phase_steps": {
+    "entry": 5,
+    "continue": 5,
+    "after_compact": 5,
+    "continue_restart": 5
+  },
+  "provider_charge_usd": 0,
+  "usage": "scripted; CLI token/cost estimates are not model billing",
+  "cli": "2.1.317 (Claude Code)",
+  "source": {
+    "kind": "tracked_worktree",
+    "git_head": "8008c73b2c04b546e8e91a5ab180f154929de68e",
+    "source_files": 423,
+    "manifest_sha256": "34bcfb2d7be1a34a490238cf12f7c3d82b551a5d919d3ae312ea12796249f3cb",
+    "harness_sha256": "45bb603ca47e35696cbdb426fa3b4e5a20457160fa1ead2d6150a04addfd8c3e"
+  },
+  "staged_source_unchanged": true,
+  "run_dir": "/tmp/ccst-native-continuity-c0y6g5a7",
+  "compact_boundary_line": 81,
+  "phases": [
+    {
+      "phase": "entry",
+      "result_line": 36,
+      "subtype": "success",
+      "elapsed_seconds": 5.879,
+      "steps": 5,
+      "tools": 3,
+      "binding": {
+        "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+        "status": "completed",
+        "invocation_id": "b1fade74915444348d378c70ba7fec2a",
+        "started_at": 1793759294.669335,
+        "max_seconds": 600,
+        "round_limit": {
+          "max_lanes": null,
+          "round_id": "",
+          "previous_round_id": ""
+        },
+        "arguments": {
+          "schema_version": 4,
+          "valid": true,
+          "action": "continue",
+          "argv": [
+            "native-continuity.test",
+            "--normal",
+            "--max-seconds=600"
+          ],
+          "target_input": "native-continuity.test",
+          "target": "native-continuity.test",
+          "target_kind": "domain",
+          "target_shell": "native-continuity.test",
+          "seed_url": null,
+          "seed_url_shell": null,
+          "auth_file": null,
+          "auth_file_shell": null,
+          "hunt_auth_flags": [],
+          "context_file": null,
+          "context_file_shell": null,
+          "cadence": "normal",
+          "checkpoint_policy": "batched",
+          "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
+          "quick": false,
+          "deep": false,
+          "max_lanes": null,
+          "max_seconds": 600,
+          "invocation_batch": {
+            "bounded": false,
+            "max_lanes": null,
+            "handoff": "normal_finish_condition"
+          },
+          "recon_flags": [],
+          "errors": []
+        },
+        "target": "native-continuity.test"
+      },
+      "owner": {
+        "target": "native-continuity.test",
+        "store_id": "e8a61c4476ef4b0e8d18084e1eacf919",
+        "backend": "primary",
+        "revision": 9
+      },
+      "stop_hooks": [
+        {
+          "line": 28,
+          "hook_id": "975e9d6a-1118-42d4-bdde-fa90bde03cd5",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {
+            "decision": "block",
+            "reason": "Known runnable owner work remains. Resolve it before claiming no worthwhile work: Compare local fixture revision B\nHost binding: {\"session_id\": \"3a793571-a2f9-49a5-ab96-7ec426a4c03d\", \"invocation_id\": \"b1fade74915444348d378c70ba7fec2a\", \"target\": \"native-continuity.test\", \"status\": \"active\", \"state_command\": \"python3 /probe/project/tools/autopilot_host.py --runtime-root /root/.claude state --session-id 3a793571-a2f9-49a5-ab96-7ec426a4c03d --invocation-id b1fade74915444348d378c70ba7fec2a --prompt-id fcecd80dcdd3418b8345df2604fc7e66 --target native-continuity.test\", \"source_sha256\": \"119363d5aa65e340e6697575b39ea26be3b5acd9760eccbadfa9e2d057723d72\", \"round_mode\": false, \"invocation_prompt\": \"/autopilot native-continuity.test --normal --max-seconds=600\", \"started_at\": 1793759294.669335, \"elapsed_seconds\": 2.572, \"max_seconds\": 600, \"round_limit\": {\"max_lanes\": null, \"round_id\": \"\", \"previous_round_id\": \"\"}}"
+          }
+        },
+        {
+          "line": 35,
+          "hook_id": "62dedd41-4976-4fee-978e-c0c508f0fbca",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {}
+        }
+      ]
+    },
+    {
+      "phase": "question",
+      "result_line": 43,
+      "subtype": "success",
+      "elapsed_seconds": 6.048,
+      "steps": 0,
+      "tools": 0,
+      "binding": {
+        "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+        "status": "completed",
+        "invocation_id": "b1fade74915444348d378c70ba7fec2a",
+        "started_at": 1793759294.669335,
+        "max_seconds": 600,
+        "round_limit": {
+          "max_lanes": null,
+          "round_id": "",
+          "previous_round_id": ""
+        },
+        "arguments": {
+          "schema_version": 4,
+          "valid": true,
+          "action": "continue",
+          "argv": [
+            "native-continuity.test",
+            "--normal",
+            "--max-seconds=600"
+          ],
+          "target_input": "native-continuity.test",
+          "target": "native-continuity.test",
+          "target_kind": "domain",
+          "target_shell": "native-continuity.test",
+          "seed_url": null,
+          "seed_url_shell": null,
+          "auth_file": null,
+          "auth_file_shell": null,
+          "hunt_auth_flags": [],
+          "context_file": null,
+          "context_file_shell": null,
+          "cadence": "normal",
+          "checkpoint_policy": "batched",
+          "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
+          "quick": false,
+          "deep": false,
+          "max_lanes": null,
+          "max_seconds": 600,
+          "invocation_batch": {
+            "bounded": false,
+            "max_lanes": null,
+            "handoff": "normal_finish_condition"
+          },
+          "recon_flags": [],
+          "errors": []
+        },
+        "target": "native-continuity.test"
+      },
+      "owner": {
+        "target": "native-continuity.test",
+        "store_id": "e8a61c4476ef4b0e8d18084e1eacf919",
+        "backend": "primary",
+        "revision": 9
+      },
+      "stop_hooks": [
+        {
+          "line": 42,
+          "hook_id": "2bc45556-6693-4bac-98c6-e8120ff70993",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {}
+        }
+      ]
+    },
+    {
+      "phase": "continue",
+      "result_line": 59,
+      "subtype": "success",
+      "elapsed_seconds": 8.973,
+      "steps": 5,
+      "tools": 2,
+      "binding": {
+        "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+        "status": "completed",
+        "invocation_id": "7268794c47814775a8d8d87ad64e7653",
+        "started_at": 1793759294.669335,
+        "max_seconds": 600,
+        "round_limit": {
+          "max_lanes": null,
+          "round_id": "",
+          "previous_round_id": ""
+        },
+        "arguments": {
+          "schema_version": 4,
+          "valid": true,
+          "action": "continue",
+          "argv": [
+            "native-continuity.test",
+            "--normal",
+            "--max-seconds=600"
+          ],
+          "target_input": "native-continuity.test",
+          "target": "native-continuity.test",
+          "target_kind": "domain",
+          "target_shell": "native-continuity.test",
+          "seed_url": null,
+          "seed_url_shell": null,
+          "auth_file": null,
+          "auth_file_shell": null,
+          "hunt_auth_flags": [],
+          "context_file": null,
+          "context_file_shell": null,
+          "cadence": "normal",
+          "checkpoint_policy": "batched",
+          "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
+          "quick": false,
+          "deep": false,
+          "max_lanes": null,
+          "max_seconds": 600,
+          "invocation_batch": {
+            "bounded": false,
+            "max_lanes": null,
+            "handoff": "normal_finish_condition"
+          },
+          "recon_flags": [],
+          "errors": []
+        },
+        "target": "native-continuity.test"
+      },
+      "owner": {
+        "target": "native-continuity.test",
+        "store_id": "e8a61c4476ef4b0e8d18084e1eacf919",
+        "backend": "primary",
+        "revision": 9
+      },
+      "stop_hooks": [
+        {
+          "line": 51,
+          "hook_id": "44d4d799-3069-4965-bcb4-6b844745c028",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {
+            "decision": "block",
+            "reason": "Continue worthwhile investigation. Before a justified stop, read fresh Closure and record an existing Checkpoint global review with termination bound to this session/invocation; a handoff or report is not a stop reason.\nHost binding: {\"session_id\": \"3a793571-a2f9-49a5-ab96-7ec426a4c03d\", \"invocation_id\": \"7268794c47814775a8d8d87ad64e7653\", \"target\": \"native-continuity.test\", \"status\": \"active\", \"state_command\": \"python3 /probe/project/tools/autopilot_host.py --runtime-root /root/.claude state --session-id 3a793571-a2f9-49a5-ab96-7ec426a4c03d --invocation-id 7268794c47814775a8d8d87ad64e7653 --prompt-id 0123ade105704708985807a9f735171c --target native-continuity.test\", \"source_sha256\": \"119363d5aa65e340e6697575b39ea26be3b5acd9760eccbadfa9e2d057723d72\", \"round_mode\": false, \"invocation_prompt\": \"/autopilot native-continuity.test --normal --max-seconds=600\", \"started_at\": 1793759294.669335, \"elapsed_seconds\": 5.693, \"max_seconds\": 600, \"round_limit\": {\"max_lanes\": null, \"round_id\": \"\", \"previous_round_id\": \"\"}}"
+          }
+        },
+        {
+          "line": 58,
+          "hook_id": "4f9f00e4-4003-4342-8dd8-901ca6178505",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {}
+        }
+      ]
+    },
+    {
+      "phase": "compact",
+      "result_line": 84,
+      "subtype": "success",
+      "elapsed_seconds": 10.068,
+      "steps": 0,
+      "tools": 0,
+      "binding": {
+        "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+        "status": "completed",
+        "invocation_id": "7268794c47814775a8d8d87ad64e7653",
+        "started_at": 1793759294.669335,
+        "max_seconds": 600,
+        "round_limit": {
+          "max_lanes": null,
+          "round_id": "",
+          "previous_round_id": ""
+        },
+        "arguments": {
+          "schema_version": 4,
+          "valid": true,
+          "action": "continue",
+          "argv": [
+            "native-continuity.test",
+            "--normal",
+            "--max-seconds=600"
+          ],
+          "target_input": "native-continuity.test",
+          "target": "native-continuity.test",
+          "target_kind": "domain",
+          "target_shell": "native-continuity.test",
+          "seed_url": null,
+          "seed_url_shell": null,
+          "auth_file": null,
+          "auth_file_shell": null,
+          "hunt_auth_flags": [],
+          "context_file": null,
+          "context_file_shell": null,
+          "cadence": "normal",
+          "checkpoint_policy": "batched",
+          "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
+          "quick": false,
+          "deep": false,
+          "max_lanes": null,
+          "max_seconds": 600,
+          "invocation_batch": {
+            "bounded": false,
+            "max_lanes": null,
+            "handoff": "normal_finish_condition"
+          },
+          "recon_flags": [],
+          "errors": []
+        },
+        "target": "native-continuity.test"
+      },
+      "owner": {
+        "target": "native-continuity.test",
+        "store_id": "e8a61c4476ef4b0e8d18084e1eacf919",
+        "backend": "primary",
+        "revision": 9
+      },
+      "stop_hooks": []
+    },
+    {
+      "phase": "after_compact",
+      "result_line": 100,
+      "subtype": "success",
+      "elapsed_seconds": 12.672,
+      "steps": 5,
+      "tools": 2,
+      "binding": {
+        "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+        "status": "completed",
+        "invocation_id": "d865582d9dca4a2ea2fc09a9a6727e9b",
+        "started_at": 1793759294.669335,
+        "max_seconds": 600,
+        "round_limit": {
+          "max_lanes": null,
+          "round_id": "",
+          "previous_round_id": ""
+        },
+        "arguments": {
+          "schema_version": 4,
+          "valid": true,
+          "action": "continue",
+          "argv": [
+            "native-continuity.test",
+            "--normal",
+            "--max-seconds=600"
+          ],
+          "target_input": "native-continuity.test",
+          "target": "native-continuity.test",
+          "target_kind": "domain",
+          "target_shell": "native-continuity.test",
+          "seed_url": null,
+          "seed_url_shell": null,
+          "auth_file": null,
+          "auth_file_shell": null,
+          "hunt_auth_flags": [],
+          "context_file": null,
+          "context_file_shell": null,
+          "cadence": "normal",
+          "checkpoint_policy": "batched",
+          "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
+          "quick": false,
+          "deep": false,
+          "max_lanes": null,
+          "max_seconds": 600,
+          "invocation_batch": {
+            "bounded": false,
+            "max_lanes": null,
+            "handoff": "normal_finish_condition"
+          },
+          "recon_flags": [],
+          "errors": []
+        },
+        "target": "native-continuity.test"
+      },
+      "owner": {
+        "target": "native-continuity.test",
+        "store_id": "e8a61c4476ef4b0e8d18084e1eacf919",
+        "backend": "primary",
+        "revision": 9
+      },
+      "stop_hooks": [
+        {
+          "line": 92,
+          "hook_id": "85fa0858-2293-4d08-be11-560266a20482",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {
+            "decision": "block",
+            "reason": "Continue worthwhile investigation. Before a justified stop, read fresh Closure and record an existing Checkpoint global review with termination bound to this session/invocation; a handoff or report is not a stop reason.\nHost binding: {\"session_id\": \"3a793571-a2f9-49a5-ab96-7ec426a4c03d\", \"invocation_id\": \"d865582d9dca4a2ea2fc09a9a6727e9b\", \"target\": \"native-continuity.test\", \"status\": \"active\", \"state_command\": \"python3 /probe/project/tools/autopilot_host.py --runtime-root /root/.claude state --session-id 3a793571-a2f9-49a5-ab96-7ec426a4c03d --invocation-id d865582d9dca4a2ea2fc09a9a6727e9b --prompt-id ef95557667744b97a769f08e80d4e004 --target native-continuity.test\", \"source_sha256\": \"119363d5aa65e340e6697575b39ea26be3b5acd9760eccbadfa9e2d057723d72\", \"round_mode\": false, \"invocation_prompt\": \"/autopilot native-continuity.test --normal --max-seconds=600\", \"started_at\": 1793759294.669335, \"elapsed_seconds\": 9.58, \"max_seconds\": 600, \"round_limit\": {\"max_lanes\": null, \"round_id\": \"\", \"previous_round_id\": \"\"}}"
+          }
+        },
+        {
+          "line": 99,
+          "hook_id": "f922cd0b-b9f2-4478-a2c8-13c0fb872c57",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {}
+        }
+      ]
+    },
+    {
+      "phase": "question_restart",
+      "result_line": 125,
+      "subtype": "success",
+      "elapsed_seconds": 14.788,
+      "steps": 0,
+      "tools": 0,
+      "binding": {
+        "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+        "status": "completed",
+        "invocation_id": "d865582d9dca4a2ea2fc09a9a6727e9b",
+        "started_at": 1793759294.669335,
+        "max_seconds": 600,
+        "round_limit": {
+          "max_lanes": null,
+          "round_id": "",
+          "previous_round_id": ""
+        },
+        "arguments": {
+          "schema_version": 4,
+          "valid": true,
+          "action": "continue",
+          "argv": [
+            "native-continuity.test",
+            "--normal",
+            "--max-seconds=600"
+          ],
+          "target_input": "native-continuity.test",
+          "target": "native-continuity.test",
+          "target_kind": "domain",
+          "target_shell": "native-continuity.test",
+          "seed_url": null,
+          "seed_url_shell": null,
+          "auth_file": null,
+          "auth_file_shell": null,
+          "hunt_auth_flags": [],
+          "context_file": null,
+          "context_file_shell": null,
+          "cadence": "normal",
+          "checkpoint_policy": "batched",
+          "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
+          "quick": false,
+          "deep": false,
+          "max_lanes": null,
+          "max_seconds": 600,
+          "invocation_batch": {
+            "bounded": false,
+            "max_lanes": null,
+            "handoff": "normal_finish_condition"
+          },
+          "recon_flags": [],
+          "errors": []
+        },
+        "target": "native-continuity.test"
+      },
+      "owner": {
+        "target": "native-continuity.test",
+        "store_id": "e8a61c4476ef4b0e8d18084e1eacf919",
+        "backend": "primary",
+        "revision": 9
+      },
+      "stop_hooks": [
+        {
+          "line": 124,
+          "hook_id": "638f64de-12d7-4aad-9f17-3c16cc649b36",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {}
+        }
+      ]
+    },
+    {
+      "phase": "continue_restart",
+      "result_line": 141,
+      "subtype": "success",
+      "elapsed_seconds": 17.916,
+      "steps": 5,
+      "tools": 2,
+      "binding": {
+        "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+        "status": "completed",
+        "invocation_id": "514c018dc5dd4493b2768aea9778ed57",
+        "started_at": 1793759294.669335,
+        "max_seconds": 600,
+        "round_limit": {
+          "max_lanes": null,
+          "round_id": "",
+          "previous_round_id": ""
+        },
+        "arguments": {
+          "schema_version": 4,
+          "valid": true,
+          "action": "continue",
+          "argv": [
+            "native-continuity.test",
+            "--normal",
+            "--max-seconds=600"
+          ],
+          "target_input": "native-continuity.test",
+          "target": "native-continuity.test",
+          "target_kind": "domain",
+          "target_shell": "native-continuity.test",
+          "seed_url": null,
+          "seed_url_shell": null,
+          "auth_file": null,
+          "auth_file_shell": null,
+          "hunt_auth_flags": [],
+          "context_file": null,
+          "context_file_shell": null,
+          "cadence": "normal",
+          "checkpoint_policy": "batched",
+          "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
+          "quick": false,
+          "deep": false,
+          "max_lanes": null,
+          "max_seconds": 600,
+          "invocation_batch": {
+            "bounded": false,
+            "max_lanes": null,
+            "handoff": "normal_finish_condition"
+          },
+          "recon_flags": [],
+          "errors": []
+        },
+        "target": "native-continuity.test"
+      },
+      "owner": {
+        "target": "native-continuity.test",
+        "store_id": "e8a61c4476ef4b0e8d18084e1eacf919",
+        "backend": "primary",
+        "revision": 9
+      },
+      "stop_hooks": [
+        {
+          "line": 133,
+          "hook_id": "394f9430-f24a-45a4-b140-4a2d090884bb",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {
+            "decision": "block",
+            "reason": "Continue worthwhile investigation. Before a justified stop, read fresh Closure and record an existing Checkpoint global review with termination bound to this session/invocation; a handoff or report is not a stop reason.\nHost binding: {\"session_id\": \"3a793571-a2f9-49a5-ab96-7ec426a4c03d\", \"invocation_id\": \"514c018dc5dd4493b2768aea9778ed57\", \"target\": \"native-continuity.test\", \"status\": \"active\", \"state_command\": \"python3 /probe/project/tools/autopilot_host.py --runtime-root /root/.claude state --session-id 3a793571-a2f9-49a5-ab96-7ec426a4c03d --invocation-id 514c018dc5dd4493b2768aea9778ed57 --prompt-id 27b05ded48af4ebcb5876201f0774d39 --target native-continuity.test\", \"source_sha256\": \"119363d5aa65e340e6697575b39ea26be3b5acd9760eccbadfa9e2d057723d72\", \"round_mode\": false, \"invocation_prompt\": \"/autopilot native-continuity.test --normal --max-seconds=600\", \"started_at\": 1793759294.669335, \"elapsed_seconds\": 14.576, \"max_seconds\": 600, \"round_limit\": {\"max_lanes\": null, \"round_id\": \"\", \"previous_round_id\": \"\"}}"
+          }
+        },
+        {
+          "line": 140,
+          "hook_id": "f43857c3-8edc-40cc-b16c-f952672c619c",
+          "session_id": "3a793571-a2f9-49a5-ab96-7ec426a4c03d",
+          "exit_code": 0,
+          "stdout": {}
+        }
+      ]
+    }
+  ],
+  "artifact_sha256": {
+    "result.json": "307e562220f377190effe259f310abbd28f75f82c3af749514924d9d5b0f2e9f",
+    "timeline.json": "1b17b362be0c73be592768721f2bb3987517506c1dffc3cc799ce27f68fca09e",
+    "visible.jsonl": "ecd61474731f9b183afb3231ca05f9ae422bfbd97da68d47803f842b728a2bac",
+    "source-manifest.json": "34bcfb2d7be1a34a490238cf12f7c3d82b551a5d919d3ae312ea12796249f3cb"
+  }
+}
