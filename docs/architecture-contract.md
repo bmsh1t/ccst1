@@ -90,8 +90,8 @@ Skills provide methods, applicability conditions, counterexamples and evidence
 requirements, not fixed test sequences or duplicated native tool manuals.
 The native platform owns Skill discovery. Natural-language discovery retains the
 original `src-hunter` description. Explicit Autopilot receives complete original
-source bodies through `autopilot_host`; independent static parts and one Bootstrap
-share the current source capture. Installed hooks retain their exact shape and receipt;
+source bodies through `autopilot_host`; `body` reads current checkout files without
+runtime, session or Hook access. Installed hooks retain their exact shape and receipt;
 their older source digest alone is not a readiness failure. Static delivery is not execution admission.
 `autopilot_host state` combines loop-check, Scope/Auth and prompt-bound rearming;
 same-session continuation reuses context and admitted argument paths without Bootstrap/init.
@@ -100,14 +100,17 @@ same task and its state command succeeds. Reopening renews only the invocation i
 used by Stop reviews; it retains entry time, limits, arguments and target facts.
 SessionStart restores completed context without granting continuation by itself.
 After compact/restart, SessionStart restores bodies and state adds owner/memory recovery.
-Changed bodies are fully delivered through existing entry/recovery transport; Refresh
-checks the old snapshot before publishing a new immutable, content-addressed snapshot
-and committing its binding. The original snapshot survives an interrupted binding write.
+Changed bodies are fully delivered through existing entry/recovery transport from
+the current checkout. Git retains source history; the host stores no body snapshots
+and never reads old `context*.json` files.
 `recovery.source_context` carries the current hash and existing numbered body commands;
-all parts must be read fully before work. Entry/frontmatter changes still require sync.
+all parts must be read fully before work. Installed entry/frontmatter drift remains an entry check.
 It renews the Stop review identity while retaining the original allocation and target facts.
-Missing/damaged source or recovery data still fails visibly. The small
-private session binding and source snapshot own no target progress or facts.
+Missing/damaged current sources or bindings still fail visibly. The small private
+session binding owns no target progress or facts. Observed lifecycle events are
+required at execution entry, never for body reading. Host, installer, runtime doctor
+and capability marker share explicit runtime root > `CCST_RUNTIME_ROOT` >
+`CLAUDE_CONFIG_DIR` > `~/.claude`; host binding paths retain their symlink checks.
 Oversized Bootstrap is delivered through a private JSON file; it is transport, never a state cache.
 Normal Stop reads current owners and the existing Checkpoint review's optional
 termination (reason, session_id, invocation_id, boundary; explicit_limit additionally

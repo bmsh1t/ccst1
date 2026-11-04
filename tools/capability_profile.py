@@ -17,8 +17,10 @@ from typing import Callable
 
 try:
     from tools.artifact_io import write_json_atomic
+    from tools.runtime_config import claude_runtime_root
 except ImportError:  # pragma: no cover - direct tools/ execution
     from artifact_io import write_json_atomic  # type: ignore
+    from runtime_config import claude_runtime_root
 
 
 SCHEMA_VERSION = 2
@@ -81,8 +83,7 @@ def _marker_lock(path: Path):
 
 def capability_marker_path(runtime_root: str | Path | None = None) -> Path:
     """Return the runtime-global capability marker path."""
-    root = Path(runtime_root or os.environ.get("CCST_RUNTIME_ROOT") or (Path.home() / ".claude"))
-    return root.expanduser().resolve() / DEGRADED_MARKER
+    return claude_runtime_root(runtime_root).resolve() / DEGRADED_MARKER
 
 
 def load_capability_degraded_marker(runtime_root: str | Path | None = None) -> dict:

@@ -35,13 +35,9 @@ prompt_yes_no() {
     [[ "${answer}" =~ ^[Yy]$ ]]
 }
 
-INSTALL_DIR="${HOME}/.claude/skills"
-COMMANDS_DIR="${HOME}/.claude/commands"
-AGENTS_DIR="${HOME}/.claude/agents/claude-bug-bounty"
-
 echo "Installing managed Claude runtime files..."
 python3 "${SCRIPT_DIR}/tools/runtime_doctor.py" \
-    --repo-root "${SCRIPT_DIR}" --runtime-root "${HOME}/.claude" --sync --prune
+    --repo-root "${SCRIPT_DIR}" --sync --prune
 
 echo "Done. Selected runtime files verified; unchanged owned retired files removed."
 echo "CCST lifecycle hook groups are managed in settings.json; other settings and hooks are preserved. Restart Claude after sync."
@@ -190,4 +186,4 @@ echo "  # Optional per-invocation exclusion only when explicitly requested now:"
 echo "  python3 tools/hunt.py --target target.com --scan-only --scanner-skip module1,module2"
 echo ""
 echo "Specialized agents:"
-echo "  Installed under ${AGENTS_DIR}"
+echo "  Installed under the selected runtime's agents/claude-bug-bounty"

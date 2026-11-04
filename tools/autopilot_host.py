@@ -5,9 +5,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import fcntl
-import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shlex
@@ -20,7 +18,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.artifact_io import publish_bytes_create_only, write_json_atomic
-from tools.claude_hook_contract import DYNAMIC_OUTPUT_LIMIT, capture_context, context_chunks, dynamic_output, hook_context, host_source_digest, json_digest
+from tools.claude_hook_contract import DYNAMIC_OUTPUT_LIMIT, capture_context, dynamic_output, hook_context, json_digest
+from tools.runtime_config import claude_runtime_root
 
 
 def _identifier(value: str) -> str:
@@ -36,15 +35,15 @@ def session_binding(runtime: Path, session_id: str):
         if path.is_symlink():
             raise ValueError("Claude host binding path must not be linked")
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-    state_path, context_path, lock_path = (directory / name for name in ("binding.json", "context.json", "lock"))
-    if any(p.is_symlink() or (p.exists() and not p.is_file()) for p in (state_path, context_path, lock_path)):
+    state_path, lock_path = (directory / name for name in ("binding.json", "lock"))
+    if any(p.is_symlink() or (p.exists() and not p.is_file()) for p in (state_path, lock_path)):
         raise ValueError("Claude host binding must use regular private files")
     with lock_path.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         state = json.loads(state_path.read_text()) if state_path.exists() else {"session_id": session_id, "status": "idle"}
         if not isinstance(state, dict) or state.get("session_id") != session_id:
             raise ValueError("invalid Claude host binding")
-        yield state, state_path, context_path
+        yield state, state_path
 
 
 def _state_command(runtime: Path, binding: dict) -> str:
@@ -68,20 +67,6 @@ def _host_view(runtime: Path, binding: dict) -> dict:
     }
 
 
-def _capture_bound_context(binding: dict, round_mode: bool, *, previous: dict | None = None) -> dict:
-    if not re.fullmatch(r"[0-9a-f]{64}", str(binding.get("contract_sha256") or "")):
-        raise ValueError("Autopilot lifecycle hooks were not observed for this session; run sync-check and restart Claude")
-    if binding.get("repo_root") not in {None, str(REPO_ROOT)}:
-        raise ValueError("Claude session is bound to another checkout")
-    return capture_context(REPO_ROOT, round_mode=round_mode, previous=previous)
-
-
-def _save_context(path: Path, context: dict) -> None:
-    snapshot = path.with_name(f"context-{context['content_sha256']}.json")
-    payload = {key: context[key] for key in ("sha256", "sources", "sections")}
-    publish_bytes_create_only(snapshot, json.dumps(payload, ensure_ascii=False).encode())
-
-
 def _entry_output(text: str, directory: Path) -> str:
     raw = text.encode("utf-8")
     if len(raw) < DYNAMIC_OUTPUT_LIMIT:
@@ -94,10 +79,16 @@ def _entry_output(text: str, directory: Path) -> str:
 def start(runtime: Path, session_id: str, argv: list[str], *, round_mode: bool) -> str:
     from tools.autopilot_bootstrap import build_autopilot_bootstrap, render_autopilot_bootstrap_json
     started = time.time()
-    with session_binding(runtime, session_id) as (binding, path, context_path):
+    with session_binding(runtime, session_id) as (binding, path):
+        if binding.get("repo_root") not in {None, str(REPO_ROOT)}:
+            raise ValueError("Claude session is bound to another checkout")
         binding["status"] = "suspended" if binding.get("invocation_id") else "idle"
         write_json_atomic(path, binding)
-        context = _capture_bound_context(binding, round_mode)
+        if not re.fullmatch(r"[0-9a-f]{64}", str(binding.get("contract_sha256") or "")):
+            raise ValueError(f"Autopilot entry has no lifecycle event record at {path}; "
+                             f"check that Claude hooks use checkout {REPO_ROOT} and runtime {runtime}. "
+                             "Run sync-check and restart Claude after fixing the configuration")
+        context = capture_context(REPO_ROOT, round_mode=round_mode)
         payload = build_autopilot_bootstrap(argv, repo_root=REPO_ROOT, runtime_root=runtime, round_defaults=round_mode)
         if payload["action"] != "continue":
             return _entry_output(render_autopilot_bootstrap_json(payload), path.parent)
@@ -111,47 +102,24 @@ def start(runtime: Path, session_id: str, argv: list[str], *, round_mode: bool) 
                                     "previous_round_id": "" if inherited else progress.get("round_id", "")},
                        round_mode=round_mode, repo_root=str(REPO_ROOT),
                        target=payload["arguments"]["target"], source_sha256=context["sha256"],
-                       content_sha256=context["content_sha256"],
                        last_stop_basis="", needs_refresh=False,
                        prompt_id=binding.get("prompt_id") or uuid.uuid4().hex)
         binding.pop("reopen_prompt_id", None)
         payload["host"] = _host_view(runtime, binding)
         output = _entry_output(render_autopilot_bootstrap_json(payload), path.parent)
-        _save_context(context_path, context)
         write_json_atomic(path, binding)
         return output
 
 
-def _context(binding: dict, path: Path) -> dict:
-    digest = binding["content_sha256"]
-    if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
-        raise ValueError("invalid Autopilot recovery content digest")
-    snapshot = path.with_name(f"context-{digest}.json")
-    if snapshot.is_symlink() or (snapshot.exists() and not snapshot.is_file()):
-        raise ValueError("Claude source snapshot must be a regular private file")
-    # Earlier bindings use context.json; new snapshots remain intact until binding commits.
-    if snapshot.exists():
-        path = snapshot
-    context = json.loads(path.read_text())
-    text = "\n\n".join(context["sections"])
-    if (context.get("sha256") != binding["source_sha256"]
-            or json_digest(context["sources"]) != context["sha256"]
-            or hashlib.sha256(text.encode()).hexdigest() != binding["content_sha256"]):
-        raise ValueError("damaged Autopilot recovery source snapshot")
-    return context
-
-
-def body(runtime: Path, session_id: str, part: int, *, round_mode: bool) -> str:
-    # Claude expands these in parallel with entry; static delivery cannot depend on admission.
-    with session_binding(runtime, session_id) as (binding, path, context_path):
-        context = _capture_bound_context(binding, round_mode)
-        chunks = context_chunks("\n\n".join(context["sections"]))
-        if part < 0:
-            raise ValueError("invalid entry body part")
-        if part >= len(chunks):
-            return ""
-        return dynamic_output(f"CCST_ENTRY {context['sha256']} "
-                              f"PART {part + 1}/{len(chunks)}\n" + chunks[part] + "\nCCST_ENTRY_END")
+def body(part: int, *, round_mode: bool) -> str:
+    if part < 0:
+        raise ValueError("invalid entry body part")
+    context = capture_context(REPO_ROOT, round_mode=round_mode)
+    chunks = context["chunks"]
+    if part >= len(chunks):
+        return ""
+    return dynamic_output(f"CCST_ENTRY {context['sha256']} "
+                          f"PART {part + 1}/{len(chunks)}\n" + chunks[part] + "\nCCST_ENTRY_END")
 
 
 def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id: str, target: str) -> str:
@@ -159,7 +127,7 @@ def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id:
     from tools.autopilot_loop_guard import _load_loop_guard_projection
     from tools.autopilot_state import build_decision_projection
     from tools.runtime_config import is_ctf_mode_enabled
-    with session_binding(runtime, session_id) as (binding, path, context_path):
+    with session_binding(runtime, session_id) as (binding, path):
         reopening = binding.get("status") == "completed"
         if (binding.get("status") not in {"active", "suspended", "completed"}
                 or (reopening and binding.get("reopen_prompt_id") != prompt_id)
@@ -174,8 +142,7 @@ def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id:
         write_json_atomic(path, binding)
         source = None
         if check_source:
-            previous = _context(binding, context_path)
-            current = _capture_bound_context(binding, binding["round_mode"], previous=previous)
+            current = capture_context(REPO_ROOT, round_mode=binding["round_mode"])
             if current["sha256"] != binding["source_sha256"]:
                 source, recovering = current, True
         arguments = dict(binding["arguments"])
@@ -194,11 +161,10 @@ def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id:
                 "ctf_mode": is_ctf_mode_enabled(REPO_ROOT), **context, "state": compact_autopilot_state(state)}
             if source:
                 payload["recovery"]["source_context"] = {"sha256": source["sha256"], "commands": [
-                    shlex.join(["python3", str(REPO_ROOT / "tools/autopilot_host.py"), "--runtime-root", str(runtime),
-                                "body", "--session-id", session_id, "--part", str(part),
+                    shlex.join(["python3", str(REPO_ROOT / "tools/autopilot_host.py"), "body", "--part", str(part),
                                 *(["--round-defaults"] if binding["round_mode"] else [])])
                     for part in range(len(source["chunks"]))]}
-                binding.update(source_sha256=source["sha256"], content_sha256=source["content_sha256"])
+                binding["source_sha256"] = source["sha256"]
         if reopening or source:
             # Retain the original allocation; only the old Stop attestation expires.
             binding.update(invocation_id=uuid.uuid4().hex, last_stop_basis="")
@@ -206,8 +172,6 @@ def refresh_state(runtime: Path, session_id: str, invocation_id: str, prompt_id:
         binding.update(status="active", needs_refresh=False)
         payload.update(action="continue", host=_host_view(runtime, binding))
         output = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        if source:
-            _save_context(context_path, source)
         write_json_atomic(path, binding)
         return output
 
@@ -284,7 +248,7 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
         return {}
     if part is not None and (part < 0 or event != "SessionStart"):
         raise ValueError("invalid Claude recovery part")
-    with session_binding(runtime, session_id) as (binding, path, context_path):
+    with session_binding(runtime, session_id) as (binding, path):
         if not checkout_cwd and binding.get("repo_root") != str(REPO_ROOT):
             return {}
         if binding.get("repo_root") not in {None, str(REPO_ROOT)}:
@@ -332,17 +296,16 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
                 binding.pop("reopen_prompt_id")
                 write_json_atomic(path, binding)
             try:
-                previous = _context(binding, context_path)
-                context = _capture_bound_context(binding, binding["round_mode"], previous=previous)
+                context = capture_context(REPO_ROOT, round_mode=binding["round_mode"])
             except (OSError, ValueError, KeyError, TypeError):
                 binding.update(status="completed" if completed else "suspended", needs_refresh=True)
                 write_json_atomic(path, binding)
                 raise
-            activation = ("Retained prior Autopilot context only. Automation is INACTIVE; do not apply these instructions "
+            activation = ("Current Autopilot instructions. Automation is INACTIVE; do not apply these instructions "
                           "or resume unless the current user request continues this investigation.\n"
                           if binding["status"] != "active" or data.get("source") != "compact" else "")
             if part is not None:
-                chunks = context_chunks("\n\n".join(context["sections"]))
+                chunks = context["chunks"]
                 if part >= len(chunks):
                     return {}
                 return hook_context(event, activation + f"CCST_RECOVERY {binding['invocation_id']} {context['sha256']} "
@@ -397,8 +360,7 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime-root", type=Path, default=Path(os.environ.get("CCST_RUNTIME_ROOT")
-                        or os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"))
+    parser.add_argument("--runtime-root", type=Path)
     parser.add_argument("--contract-sha256", default="")
     parser.add_argument("--ccst-autopilot-host", action="store_true")
     actions = parser.add_subparsers(dest="action", required=True)
@@ -407,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     entry.add_argument("--round-defaults", action="store_true")
     entry.add_argument("arguments", nargs=argparse.REMAINDER)
     material = actions.add_parser("body")
-    material.add_argument("--session-id", required=True)
+    material.add_argument("--session-id", help="Accepted for installed commands; body reads are session-independent")
     material.add_argument("--part", type=int, required=True)
     material.add_argument("--round-defaults", action="store_true")
     state = actions.add_parser("state", help="Refresh the bound investigation and rearm its stop check")
@@ -416,15 +378,16 @@ def main(argv: list[str] | None = None) -> int:
     hooks = actions.add_parser("hook")
     hooks.add_argument("--part", type=int)
     args = parser.parse_args(argv)
-    runtime = args.runtime_root.expanduser().absolute()
     try:
+        if args.action == "body":
+            print(body(args.part, round_mode=args.round_defaults))
+            return 0
+        runtime = claude_runtime_root(args.runtime_root)
         if args.action == "entry":
             arguments = args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments
             print(start(runtime, args.session_id, arguments, round_mode=args.round_defaults))
         elif args.action == "state":
             print(refresh_state(runtime, args.session_id, args.invocation_id, args.prompt_id, args.target))
-        elif args.action == "body":
-            print(body(runtime, args.session_id, args.part, round_mode=args.round_defaults))
         else:
             data = json.load(sys.stdin)
             if not isinstance(data, dict):

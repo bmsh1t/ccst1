@@ -73,29 +73,21 @@ def refreshable_source(relative: str, installed: str, current: str) -> bool:
     return False
 
 
-def capture_context(repo_root: Path | str, *, round_mode: bool = False, previous: dict | None = None) -> dict:
-    """Capture original bodies; source hashes prevent mixed-version recovery."""
+def capture_context(repo_root: Path | str, *, round_mode: bool = False) -> dict:
+    """Read current complete bodies; source hashes bind their numbered transport."""
     root = Path(repo_root).resolve()
     sections, bindings = [], {}
-    for index, (relative, heading) in enumerate(CONTEXT_SOURCES[:4 if round_mode else 3]):
+    for relative, heading in CONTEXT_SOURCES[:4 if round_mode else 3]:
         text, digest = _source(root, relative)
         body = _body(text, heading)
         if not body.strip():
             raise ValueError(f"empty host body: {relative}")
-        if previous is not None and previous["sources"].get(relative) != digest:
-            old_body = previous["sections"][index].split("\nBODY_BEGIN\n", 1)[1].removesuffix("\nBODY_END")
-            # Rebuild the old bytes with today's prefix to detect changes outside delivered bodies.
-            reconstructed = text.removesuffix(body) + old_body
-            if hashlib.sha256(reconstructed.encode()).hexdigest() != previous["sources"].get(relative):
-                raise ValueError(f"Autopilot entry/configuration changed: {relative}; run sync-check and restart Claude")
         bindings[relative] = digest
         sections.append(f"CCST_SOURCE {root / relative}\nPACKAGE_ROOT {root / Path(relative).parent}\n"
                         f"SHA256 {digest}\nBODY_BEGIN\n{body}\nBODY_END")
     text = "\n\n".join(sections)
     return {"text": text, "sha256": json_digest(bindings), "sources": bindings,
-            "sections": sections,
-            "content_sha256": hashlib.sha256(text.encode()).hexdigest(),
-            "chunks": context_chunks(text)}
+            "sections": sections, "chunks": context_chunks(text)}
 
 
 def dynamic_output(text: str) -> str:

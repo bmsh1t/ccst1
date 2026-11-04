@@ -13,6 +13,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 ### 2. Signatures
 
 - `/autopilot <target> [--paranoid|--normal|--yolo|--quick|--deep]` runs inline.
+- `autopilot_host.py body --part N [--round-defaults]` reads current sources without runtime/session I/O; installed `--session-id` is accepted and ignored.
 - `autopilot_host.py state --session-id ID --invocation-id ID --prompt-id ID --target TARGET` refreshes/rearms the bound loop.
 - `build_autopilot_state(repo_root, target, memory_dir=None, *, bounded=False, ...)`
   exposes the same owner facts in full or bounded form.
@@ -35,27 +36,25 @@ mechanical safety, evidence and recovery constraints govern execution.
   both commands allow the native Skill tool. Existing full body context is reused;
   explicit entry delivers original source through `autopilot_host`, without
   depending on model-initiated Skill invocation. Independent dynamic static parts
-  may precede Bootstrap, but never admit investigation. Each part validates the
-  observed hook arrival and retains boundary whitespace with end markers;
+  may precede Bootstrap, but never admit investigation. Body reads access only current
+  checkout sources; execution entry checks observed Hook arrival. Each part retains boundary whitespace with end markers;
   its source hash matches the admitted host binding. Description/manifest/hash
   metadata is not body context. The original description remains unchanged for
   native discovery; no Python selector, Store load receipt or per-lane invocation.
-- The host stores only private session/invocation/target/arguments and an integrity-bound
-  source snapshot. SessionStart settings hooks restore complete source parts for
+- The host stores only private session/invocation/target/arguments, original limits
+  and a current source fingerprint. SessionStart settings hooks restore complete source parts for
   compact/restart. Prompt/target-bound `autopilot_host state` combines loop-check,
   Scope/Auth and rearming; admitted argument paths stay bound, not re-resolved aliases.
   Bootstrap/init/runtime compare remain entry-only.
   `needs_refresh` adds existing compact state/memory as `recovery`; otherwise reuse
-  context. Rearming verifies saved bytes before acquiring current sources. A changed
+  context. Refresh and SessionStart read current checkout sources. A changed
   body is returned through `recovery.source_context.commands` (existing numbered body
   reads, all matching `source_context.sha256`). All parts must be read before work.
-  Refresh publishes an immutable content-addressed snapshot before committing its
-  binding; failure leaves the old snapshot usable. Earlier `context.json` stays readable.
-  invocation_id renews without resetting allocation. Undelivered entry/frontmatter
-  changes are detected against the original saved hashes and still require sync.
-  SessionStart delivers current bodies but keeps the prior snapshot until Refresh.
-  Source hashes detect changes rather than rejecting updates. Missing/damaged sources
-  and snapshots still fail; no protocol version or migration state is added. Failures
+  Refresh renews invocation_id without resetting allocation. No body snapshot is
+  written, read, migrated or deleted; Git owns source history. Installed entry/frontmatter
+  comparison remains at execution entry. Source fingerprints detect updates and bind
+  complete numbered delivery. Missing/damaged current sources and bindings still fail;
+  no protocol version or migration state is added. Failures
   stay suspended. General queries do not access host bindings. Bootstrap is never
   cached as target truth. Original body
   reads are independent of activation order and add no second preparation state.
@@ -562,7 +561,9 @@ wiring changes.
   The marker is written only through the capability-profile writer/CLI, is
   atomic and lock-serialized, and remains advisory: it is not target evidence,
   Queue work, or an automatic stop condition. CLI `show`, `record-degraded` and
-  `clear` use explicit runtime root, `CCST_RUNTIME_ROOT`, then `~/.claude`.
+  `clear`, host, runtime doctor and installer share `claude_runtime_root`: explicit
+  root > `CCST_RUNTIME_ROOT` > `CLAUDE_CONFIG_DIR` > `~/.claude`. Host preserves
+  unresolved links for its binding path checks; doctor/marker resolve after selection.
   Recovery is explicit, never inferred from PATH presence. Invalid UTF-8/schema,
   oversized files, symlinks and special files remain visible as invalid rather
   than hanging bootstrap; CLI invalid/error exit is 2. Startup never writes this marker.

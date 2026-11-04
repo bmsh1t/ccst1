@@ -64,7 +64,8 @@ Publishing a report returns to investigation; a saved next action is not complet
 Round mechanics belong to `/autopilot-round`; use them for existing Round work or
 an explicitly supplied lane cap. Ordinary uncapped runs need no new Round.
 
-The native host supplies complete static bodies alongside Bootstrap; only
+The native host reads current checkout bodies without session, Hook or runtime access;
+only execution entry checks observed lifecycle events. Bodies accompany Bootstrap; only
 `action=continue` admits investigation. Each `CCST_ENTRY` source hash must match
 `host.source_sha256`; apply these current bodies in place of cached bodies for the same files.
 `CCST_SOURCE` names the original file/package root.

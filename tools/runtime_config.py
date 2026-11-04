@@ -4,7 +4,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+
+def claude_runtime_root(path: str | Path | None = None) -> Path:
+    """Select one runtime without resolving links before the caller's path checks."""
+    return Path(path or os.environ.get("CCST_RUNTIME_ROOT") or os.environ.get("CLAUDE_CONFIG_DIR")
+                or Path.home() / ".claude").expanduser().absolute()
 
 
 def load_runtime_config(repo_root: str | Path) -> dict:

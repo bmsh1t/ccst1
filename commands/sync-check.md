@@ -5,7 +5,9 @@ description: Check whether the current repo runtime files match the Claude CLI i
 # /sync-check
 
 Inspect disk drift between this repo and the selected Claude runtime root
-(default `~/.claude/`). Disk parity does not inspect a running host's cached Skills.
+(explicit `--runtime-root` > `CCST_RUNTIME_ROOT` > `CLAUDE_CONFIG_DIR` > `~/.claude/`).
+Host, installer and capability markers use the same selection. Disk parity does not
+inspect a running host's cached Skills.
 
 ## Why This Exists
 
@@ -47,6 +49,7 @@ and reports:
 
 An older source digest alone does not invalidate installed hooks. Required events,
 paths, arguments, recovery slots and the ownership receipt must still match.
+Hook arrival is checked at execution entry; reading current bodies needs no runtime or session record.
 Receipt-owned bodies freshly delivered by the host are advisory drift when their
 entry/frontmatter is unchanged. Other critical resources and entry/configuration
 changes still require sync; `--fail-on-drift` continues to report all disk differences.

@@ -15,10 +15,12 @@ from pathlib import Path
 
 try:
     from tools.artifact_io import write_text_atomic
+    from tools.runtime_config import claude_runtime_root
     from tools.skill_reference_contract import CORE_SKILL_NAME, CORE_SKILL_PATH, KNOWN_ENTRY_NAMES
     from tools.claude_hook_contract import CONTEXT_SOURCES, HOOK_OWNER, host_hooks, json_digest, managed_hook_groups, refreshable_source, replace_managed_hooks
 except ImportError:  # direct script execution; keep the installer standard-library-only
     from artifact_io import write_text_atomic
+    from runtime_config import claude_runtime_root
     from skill_reference_contract import CORE_SKILL_NAME, CORE_SKILL_PATH, KNOWN_ENTRY_NAMES
     from claude_hook_contract import CONTEXT_SOURCES, HOOK_OWNER, host_hooks, json_digest, managed_hook_groups, refreshable_source, replace_managed_hooks
 
@@ -44,14 +46,7 @@ def _repo_root(path: str | Path | None = None) -> Path:
 
 
 def _runtime_root(path: str | Path | None = None) -> Path:
-    if path:
-        return Path(path).expanduser().resolve()
-    # 环境覆盖（测试隔离，审计 F6）：让干净环境/CI 能指向一个准备好的
-    # 临时 runtime，而不是依赖开发者真实 ~/.claude 安装。生产缺省不变。
-    override = os.environ.get("CCST_RUNTIME_ROOT", "")
-    if override:
-        return Path(override).expanduser().resolve()
-    return (Path.home() / ".claude").resolve()
+    return claude_runtime_root(path).resolve()
 
 
 def load_critical_runtime_manifest(repo_root: str | Path | None = None) -> dict:
@@ -676,7 +671,7 @@ def _release_binding(repo: Path, sources: dict) -> dict:
             checkout[path.relative_to(repo).as_posix()] = {"sha256": digest, "mode": stat.S_IMODE(path.stat().st_mode)}
     executor_root = Path(__file__).resolve().parent
     executor = {name: _sha256((executor_root / name).read_bytes()) for name in
-                ("runtime_doctor.py", "artifact_io.py", "skill_reference_contract.py", "claude_hook_contract.py")}
+                ("runtime_doctor.py", "artifact_io.py", "skill_reference_contract.py", "claude_hook_contract.py", "runtime_config.py")}
     return {
         "source_sha256": _sha256(_json_text(checkout).encode()),
         "source_scope": ["AGENTS.md", "CLAUDE.md", "install.sh", "rules/**/*.md", "docs/**/*.md",

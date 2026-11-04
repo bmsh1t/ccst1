@@ -109,6 +109,14 @@ def inside():
     from tools.runtime_doctor import sync_runtime
     from tools.target_store import initialize_target_store, runtime_store
     from tools.target_paths import target_storage_key
+    assert not RUNTIME.exists()
+    current = capture_context(PROJECT)
+    for part, chunk in enumerate(current['chunks']):
+        output = subprocess.check_output([sys.executable, '-B', str(PROJECT / 'tools/autopilot_host.py'),
+            'body', '--part', str(part)], cwd=PROJECT, text=True, timeout=10)
+        assert output == (f'CCST_ENTRY {current["sha256"]} PART {part + 1}/{len(current["chunks"])}\n'
+                          f'{chunk}\nCCST_ENTRY_END\n'), 'body requires no runtime or lifecycle event'
+    assert not RUNTIME.exists(), 'body created a runtime'
     assert sync_runtime(PROJECT, RUNTIME, prune=True)['status'] == 'complete'
     initialize_target_store(PROJECT, TARGET)
     store = runtime_store(PROJECT, TARGET)
@@ -399,10 +407,11 @@ def inside():
         run(argv, [('question_restart', '解释上次的本地记录，不要继续执行'),
                    ('continue_restart', '继续同一个本地夹具核验')])
         assert boundaries, 'no real compact boundary'
+        assert not list((RUNTIME / '.ccst-autopilot').rglob('context*.json')), 'host wrote a body snapshot'
         result = {'status': 'passed', 'session_id': sid, 'owner_unchanged': store.binding() == owner,
             'elapsed_seconds': round(time.monotonic() - started, 3), 'compact_boundaries': boundaries,
             'requests': state['requests'], 'tool_calls': state['tools'], 'inference': False,
-            'phase_steps': state['steps'],
+            'phase_steps': state['steps'], 'body_without_runtime': True, 'context_snapshots': 0,
             'source_updates': source_updates,
             'provider_charge_usd': 0, 'usage': 'scripted; CLI token/cost estimates are not model billing',
             'cli': subprocess.check_output(['/opt/claude', '--version'], env=env, text=True).strip()}

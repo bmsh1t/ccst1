@@ -20,15 +20,17 @@ CCST 路径与操作。本文件导航现有合同并记录来源；根 AGENTS.m
 Claude 宿主入口并行送达完整 `src-hunter` 正文和共享运行协议，Bootstrap 单独完成
 Scope/Auth、安装一致性和目标状态准入。正文分块带来源指纹、原包路径和结束标记，
 避免宿主预览截断与末尾空白丢失；收到正文不等于获准执行。
-`tools/autopilot_host.py` 保留本次会话/调用/目标绑定和源码快照；超限 Bootstrap
+`body` 直接读取当前项目完整正文，不访问 Hook、会话或 runtime。宿主只保留
+本次会话/调用/目标绑定，不保存正文快照；历史源码由 Git 保存。超限 Bootstrap
 通过私有文件完整交付，该副本不作为目标事实或恢复缓存。目标列表先走已有批次选择，再绑定具体目标。
 
 同会话复用上下文；`host.state_command` 合并 Scope/Auth、循环刷新与同任务确认，不重跑
 Bootstrap/初始化。压缩或重启后 SessionStart 恢复正文，同一次刷新附带 owner 记忆与交接。
 普通正文更新重新送达当前全文；执行 Refresh 的 `recovery.source_context.commands` 并完整
 读取所有同 hash 分块后替换旧指令，同时更新
-停止审查绑定，原目标、记忆、待办和时间/Round 额度保留。旧快照先校验，损坏仍报错。
-失败保持暂停；普通问答、取消和换任务不激活 Stop。通用状态/记忆查询不接触 host 绑定。
+停止审查绑定，原目标、记忆、待办和时间/Round 额度保留。旧 `context*.json` 不读取、
+不迁移、不删除。当前正文或绑定损坏仍报错；普通问答、取消和换任务不激活 Stop。
+通用状态/记忆查询不接触 host 绑定。
 Claude 原生后台结果的完整 `task-notification` 封套不算新用户任务，只保留当前启停状态，
 不激活已暂停的调用。该封套识别不是发送者认证，不读取模型历史。
 Stop 读取当前 owner 与同一 Checkpoint Global Review 的停止依据；未完执行不能正常收尾，
@@ -42,7 +44,10 @@ Recon/Scan 运行中可并行独立且有依据的调查；锁只防同阶段重
 安装与恢复钩子通过 [sync-check](../commands/sync-check.md) 的既有 ownership/journal
 写入选定 runtime 的 `settings.json`，只管理 CCST 组；首次安装或 hook 版本变化要求
 全量 kinds 加 `--prune`。未授权时不安装个人 runtime。原生 description 发现保持不变。
-旧源码摘要本身不阻断入口；Hook 配置形状和回执、实际到达、项目/会话绑定仍需有效。
+宿主、安装器、runtime doctor 和能力标记共用 runtime 选择顺序：显式参数 >
+`CCST_RUNTIME_ROOT` > `CLAUDE_CONFIG_DIR` > `~/.claude`。
+旧源码摘要本身不阻断入口；执行入口仍检查 Hook 配置/回执、实际到达和项目/会话绑定。
+缺少实际到达记录时，入口错误指出 binding、checkout 和 runtime 路径，正文读取不受影响。
 由宿主完整交付的正文变更可直接刷新；入口配置和其他关键安装资源变化仍需同步。
 宿主机制已在 Claude Code 2.1.304 的隔离假 API 上验证；正文送达与停止校验不证明
 模型正确使用方法，也不能发现所有绕过登记合同的原生请求。
