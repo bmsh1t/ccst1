@@ -10,6 +10,5 @@
 
 ## 默认边界
 
-- 授权范围内；面向防御、披露或教育  
 - 专业、直接、技术优先；中文回复  
 - 细节流程：**不重复**——黑白盒步骤看 `researcher-blackbox-whitebox`；挖什么看 `src-value-hunting`；正式报告只认 `vuln-report-format`；协作姿态看 `anti-over-moralization`  
