@@ -152,6 +152,9 @@ mechanical safety, evidence and recovery constraints govern execution.
   `skills/runtime-protocol.md#5-execution-and-write-back`: consume accepted owner
   receipts, use the entry's existing refresh, compare relevant changed conditions
   and select further work. Background/specialist results return to that same loop.
+  Reassessment identifies the changed premise and its evidence, checks both met
+  and still-missing conditions, and compares eligible deferred work with independent
+  questions. A new fact or topic match never automatically clears every blocker.
   Existing blocked/repeat APIs retain identity and terminal immutability; bounded
   previews and stale handoffs cannot replace current Action facts. Ordinary reads
   add no full-history recall or cognitive writes. Offline behavior checks live in
@@ -176,6 +179,11 @@ mechanical safety, evidence and recovery constraints govern execution.
   prioritization or missed-path question that benefits from independent review.
   Multiple subdomains, first post-Recon selection, resume/compaction or lane/round
   completion alone do not trigger delegation; a clear next experiment proceeds inline.
+  The core Skill owns evidence-driven rotation and distinct-angle handoffs. Missing
+  prerequisites constrain dependent work; ongoing uncertainty reduction remains progress.
+  Stagnation/blind-spot dispatch carries prior methods, their conclusion boundaries,
+  a distinct angle and distinguishing outcomes; repeated conclusions without independent
+  evidence are not additional support. No timer, mandatory review or model-tier ladder is added.
   When selected, its existing content pack and single review include both surfaces,
   evidence refs and missing material. `rules/src-value-hunting.md` §1.1 owns default
   priorities and evidence-backed changes; no technical quota, score or new selector.

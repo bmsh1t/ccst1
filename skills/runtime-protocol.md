@@ -160,7 +160,9 @@ Blocked、Not applicable、Dead ends、Still unknown 和 Next actions。
 执行结果（含后台终态、子代理交付）由主会话读取原件、接受增量并完成对应 owner 写回；
 消费回执并完成当前入口要求的状态刷新后，再判断：确认了什么、哪些相关旧判断/阻塞需要重评、
 当前有哪些可执行工作。复用有效工作集；缺依据按 [Problem Recall](#problem-recall) 召回。
-条件变化时展开相关 blocked/延期工作，预览窗口不代表全部；未审尾部仍是未知。
+条件变化先指出改变的具体前提及证据，再展开相关 blocked/延期工作，逐项比较已满足与仍缺的条件；
+新增一项事实不等于全部阻塞解除，主题相似也不证明适用。预览窗口不代表全部；未审尾部仍是未知。
+将条件已满足的相关工作与其它可执行问题一起比较；保留尚缺条件的方向，不因重评而自动重试。
 重开同一 blocked 行动用原 Queue API（CLI `resolve --status queued`），保留行动身份，
 用读取时的 Store/version 做 CAS 并消费新版本回执；后续 claim/resolve 使用对应当前回执。
 completed/cancelled 不改写，同一执行意图确需重试时另建带 `repeat_of`/`repeat_reason` 的行动。

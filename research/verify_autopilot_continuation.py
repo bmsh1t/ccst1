@@ -21,13 +21,10 @@ def stage(source, root):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
     for name in ("commands/autopilot.md", "commands/autopilot-round.md",
-                 "skills/runtime-protocol.md", "agents/autopilot.md"):
+                 "skills/runtime-protocol.md", "skills/src-hunter/SKILL.md", "agents/autopilot.md"):
         destination = root / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / name, destination)
-    skill = root / "skills/src-hunter/SKILL.md"
-    skill.parent.mkdir(parents=True)
-    skill.write_text("# Synthetic method\nOffline document-review fixture only.\n")
     registry = root / "knowledge/capabilities.yaml"
     registry.parent.mkdir()
     registry.write_text("schema_version: 1\ncapabilities: []\ncontracts: {}\n")
@@ -218,7 +215,7 @@ def check(root, runtime):
     assert not any((runtime / ".ccst-autopilot" / sid).glob("context*.json"))
     results.append("normal/round/current-source transport delivers one complete result protocol without body snapshots")
     return {"passed": results, "transport_fixture": bodies,
-            "limits": "No model or network execution; synthetic core Skill and two mocked Stop owner projections."}
+            "limits": "Current protocol/Skill bodies; synthetic Store/runtime and two mocked Stop owner projections; no model or network execution."}
 
 
 if __name__ == "__main__":

@@ -48,7 +48,10 @@ Every dispatch description must therefore carry a content pack:
   and Store-backed evidence views instead of re-deriving them.
 - **本轮只做 (this round only)**: the single sub-goal, plus an explicit
   no-repeat boundary — e.g. "do not re-run full subdomain enumeration;
-  only probe the three new hosts listed". Incremental work names its delta.
+  only probe the three new hosts listed". Include prior methods and what their
+  results do and do not establish. For a stagnation or blind-spot question, use
+  `skills/src-hunter/SKILL.md#real-delegation-and-execution-handoff` to specify the distinct angle
+  and outcomes to distinguish. Incremental work names its delta.
 - **证据指针与格式**: evidence file paths with the expected read shape
   (JSON key, line range, or summary), and for any image/captcha input the
   absolute path plus the expected output format. A specialist cannot see the
