@@ -133,4 +133,5 @@ Mark newly saved originals as unregistered; reference existing canonical IDs
 without inventing new claims or evidence bindings. Include relevant actor/object
 facts, conditional experience, candidate identity/missing proof and resumable work
 in 「待落库」. The parent reviews and writes each accepted entry through the existing
-owners before starting the next lane, then collects receipts and decides closure.
+owners before starting the next lane, then consumes receipts and returns to
+Shared Automation's Refresh and next-work decision in `commands/autopilot.md`.

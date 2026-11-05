@@ -74,9 +74,9 @@ Autopilot 启动的 `state.target_memory` 与恢复的 `recovery.state.target_me
 写回显式 `--target TARGET`；active pointer 只选择已初始化目标，不是意图/状态 owner。
 缺库、legacy、damaged、fenced 按显式初始化/恢复流程处理，不猜空状态。
 `current_handoff` 独立于有界历史；`next_actions` 只取最新交接的显式 `next_intent`，
-不是 Queue。使用前连同 conditions、review_state、source_health 和纠错关系读取；
-最新不等于仍适用；遇到 disputed/superseded/needs_review，先核对纠错和当前证据，
-不沿用旧结论，也不因此停止独立调查。
+不是 Queue。使用前对照当前 Action、conditions、review_state、source_health 和纠错关系；
+已完成的工作不因旧 next_intent 重新执行。最新不等于仍适用；遇到
+disputed/superseded/needs_review，先核对纠错和当前证据，不因此停止独立调查。
 Case premise 只是预览，需要它支撑判断时展开当前 Case。缺关键依据按下节召回。
 
 ### Problem Recall
@@ -156,6 +156,16 @@ Blocked、Not applicable、Dead ends、Still unknown 和 Next actions。
 `docs/evidence-runners.md#在执行时捕获原件`，首次原生执行前读取。
 观察登记不建占位 Finding、不自动解决 Action 或关闭 Coverage；区分未执行、已执行未登记和未知效果。
 参数不确定先读所选子命令 `--help`。
+
+执行结果（含后台终态、子代理交付）由主会话读取原件、接受增量并完成对应 owner 写回；
+消费回执并完成当前入口要求的状态刷新后，再判断：确认了什么、哪些相关旧判断/阻塞需要重评、
+当前有哪些可执行工作。复用有效工作集；缺依据按 [Problem Recall](#problem-recall) 召回。
+条件变化时展开相关 blocked/延期工作，预览窗口不代表全部；未审尾部仍是未知。
+重开同一 blocked 行动用原 Queue API（CLI `resolve --status queued`），保留行动身份，
+用读取时的 Store/version 做 CAS 并消费新版本回执；后续 claim/resolve 使用对应当前回执。
+completed/cancelled 不改写，同一执行意图确需重试时另建带 `repeat_of`/`repeat_reason` 的行动。
+其他有价值工作保持可查询，低优先级不等于排除；无新依据不重试已结束路径。
+普通读取、空轮询和播报不追加全量召回、整理表或认知写回。继续、等待和停止仍归当前入口。
 
 ### Stateful Continuity
 

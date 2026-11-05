@@ -117,7 +117,7 @@ instructions. Source refresh renews the review identity while retaining the orig
    Retain its background handle and avoid duplicate launches. Independently supported
    tests, evidence analysis, validation and registration may proceed in parallel;
    do not race the same mutable session/object or read unfinished artifacts as final.
-   Consume the terminal TaskOutput and refresh before relying on its final outputs
+   Consume the terminal TaskOutput, finish step 3's write-back and enter Refresh before relying on its final outputs
    or stopping. If no independent useful work is available, wait/poll that handle.
    Before selecting or executing new work (including fresh Recon), apply the complete
    delivered `src-hunter` body under [Investigation Skill](#investigation-skill).
@@ -157,9 +157,10 @@ instructions. Source refresh renews the review identity while retaining the orig
    through `surface_projection.path` and `surface_projection.continuation.command`. `surface.review_window`
    counts describe the display window, not tested coverage. Missing/stale material
    needs raw-source reading or an explicit refresh when needed; failed reads require recovery.
-   Empty `control.owner_continuations` returns to step 2 to select investigation. When ready, use
-   `commands/validate.md` and `commands/report.md` with the same write-back/refresh
-   cycle, then return to step 2. Apply the Finish Contract before stopping.
+   Apply the result reassessment in `skills/runtime-protocol.md#5-execution-and-write-back`,
+   then return to step 2, including when `control.owner_continuations` is empty.
+   `commands/validate.md` and `commands/report.md` use this same cycle.
+   Apply the Finish Contract before stopping.
 
 Apply `rules/ccst/hunting.md`. Use Bootstrap's quoted root/target, exact seed URL and
 `arguments.hunt_auth_flags`. For bound context or `run_recon`, follow

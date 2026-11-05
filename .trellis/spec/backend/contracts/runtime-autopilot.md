@@ -148,7 +148,15 @@ mechanical safety, evidence and recovery constraints govern execution.
   determine whether authorized test identities can be obtained before treating
   a missing session as a local blocker. No mandatory login or exhaustive grid.
 - Both modes refresh post-action state; round mode first writes its terminal
-  heartbeat. `handoff` returns to investigation in this session unless an actual
+  heartbeat. Result reassessment has one shared contract in
+  `skills/runtime-protocol.md#5-execution-and-write-back`: consume accepted owner
+  receipts, use the entry's existing refresh, compare relevant changed conditions
+  and select further work. Background/specialist results return to that same loop.
+  Existing blocked/repeat APIs retain identity and terminal immutability; bounded
+  previews and stale handoffs cannot replace current Action facts. Ordinary reads
+  add no full-history recall or cognitive writes. Offline behavior checks live in
+  `research/verify_autopilot_continuation.py`; they do not establish model compliance.
+  `handoff` returns to investigation in this session unless an actual
   user/scope/explicit-limit boundary, demonstrated blocker or evidence-based no-worthwhile-
   next-question judgment justifies stopping. Report counts, anonymous denial and
   missing-but-obtainable sessions alone do not. Explain valuable unpursued leads.
