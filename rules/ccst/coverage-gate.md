@@ -2,86 +2,46 @@
 
 覆盖基线用于防止过早收工。它不是要求每个方向都实测，而是要求 Claude 对覆盖状态负责。
 
-## 核心原则
-
-Claude 不能直接说“测试完成”或“没有发现问题”，除非已经交代：
-
-- 已覆盖哪些核心 surface / lane
-- 哪些产生了 Lead / Signal / Candidate
-- 哪些被判定为 `n/a`
-- 哪些被阻塞为 `blocked`
-- 哪些因为红线不能继续
-- 哪些仍是 `unknown`
-- 下一步是什么
-
 ## 状态枚举
 
 ### 内部存储状态（9 态）
 
-覆盖的内部记录、owner 写回和终局判定使用以下 storage states：
+既有覆盖记录保留以下九态及理由；它们不替代 Action/Finding 的生命周期：
 
 | 状态 | 含义 |
 |---|---|
-| `unknown` | 尚未判断或尚未测试 |
-| `queued` | 已计划测试，但本轮未完成 |
-| `tested` | 已完成低风险验证，未发现有效线索 |
+| `unknown` | 尚未判断或尚未测试；说明下一步或本轮未覆盖原因 |
+| `queued` | 已计划测试但未完成；保留具体动作 |
+| `tested` | 记录条件下已完成验证，未发现有效线索；附证据或测试方式 |
 | `lead` | 有线索，但还缺少复现、影响或权限差异 |
 | `signal` | 有行为差异或证据，但还不能进入验证 |
 | `candidate` | 证据足够，应该进入 `/validate` |
-| `blocked` | 被权限、环境、账号、红线或信息不足阻塞 |
-| `n/a` | 明确不适用 |
+| `blocked` | 说明缺少的权限、环境、账号、材料或具体红线，以及恢复条件 |
+| `n/a` | 明确不适用，并说明原因 |
 | `dead-end` | 有证据支持、限定于记录条件的负面结果；低价值或暂停本身不属于此状态 |
 
 ### AI 接口状态（4 态）
 
-交接、摘要和 COVERAGE 输出使用 4 态接口；细粒度信息由理由字段承载：
-
-| 4 态 | 含义 |
-|---|---|
-| `untested` | 尚未判断或尚未测试（含已计划未执行的 `queued`） |
-| `investigating` | 已在调查中：`lead` / `signal` / `candidate`，或被阻塞的 `blocked` |
-| `confirmed` | 该方向已确证：finding 级证据，或 candidate 通过 `/validate` |
-| `ruled_out` | 在记录条件下未成立或不适用：`tested` / `n/a` / `dead-end`；不代表永久排除。暂停、预算结束、低优先仍保留原认知状态 |
-
-交付前检查（COVERAGE SUMMARY）的字段分组是这些理由内容的展开面，
-不构成第二套状态接口。
-
-### 4 态 ↔ 9 态映射
-
-映射必须语义无损：任何一格的 9 态信息都能从 4 态 + 理由文本还原。
-**理由字段是映射的一部分，不是可选装饰。**
-
-读方向（9 态 → 4 态投影）：
+交接、摘要使用四态加理由；理由必须保留九态细分、证据和下一意图，不能丢失信息。
+`COVERAGE SUMMARY` 是这些事实的展开分组，不是另一套状态。
 
 | 4 态 | 覆盖的内部状态 | 理由必须承载 |
 |---|---|---|
 | `untested` | `unknown`、`queued` | 下一步动作，或已计划未执行的内容 |
 | `investigating` | `lead`、`signal`、`candidate`、`blocked` | 具体档位（lead / signal / candidate）；`blocked` 归 `investigating`，理由写阻塞原因和需要什么输入 |
-| `confirmed` | 无逐格对应物（来自 finding 生命周期：candidate 经 `/validate` 确证；矩阵格 `tested_finding`） | validation / finding evidence 引用 |
+| `confirmed` | 无九态逐格对应物；来自 Finding 的当前确证裁决 | 当前 assessment / validation 与有效原件引用 |
 | `ruled_out` | `tested`、`n/a`、`dead-end` | 三档细分：测试方式与证据（tested）/ 不适用原因（n/a）/ 证伪原因（dead-end） |
 
 写方向（4 态 → 9 态，取保守侧）：回落到 9 态记录时，`investigating` 默认落
 `lead`（宁可低估，不默认 `signal` / `candidate`，理由里再细化档位）；
 `ruled_out` 按理由内容三选一落 `tested` / `n/a` / `dead-end`，三者的必填理由
-规则原样适用；`confirmed` 按 finding owner 的既有字段记录（candidate /
-validated），矩阵格记 `tested_finding`；`untested` 默认落 `unknown`，理由写明
-已计划时落 `queued`。
+规则原样适用；`untested` 默认落 `unknown`，已有计划时落 `queued`。
+写回使用对应 owner API；`confirmed` 读取 Finding 当前裁决，不能由矩阵标签反向生成。
 
-覆盖矩阵的单格状态（`untested` / `tested_clean` / `tested_finding` / `n_a`）是
-更细的 per-endpoint 证据模型，投影到 4 态接口为：`untested` → `untested`、
-`tested_clean` → `ruled_out`（tested 档）、`tested_finding` → `confirmed`、
-`n_a` → `ruled_out`（n/a 档）。
-
-## 必填理由
-
-以下内部状态必须写理由（4 态接口下，这些理由落在对应 4 态的理由字段里；
-`ruled_out` 必写理由，含 `n/a` 的不适用原因）：
-
-- `tested`：写明证据或测试方式
-- `blocked`：写明阻塞原因和需要什么输入
-- `n/a`：写明为什么不适用
-- `dead-end`：写明证伪原因
-- `unknown`：写明下一步或为什么本轮未覆盖
+矩阵的 `untested` / `tested_clean` / `tested_finding` / `n_a` 是独立的审阅/历史接口。
+`mark tested_finding` 可只保存未评估 claim，不产生执行证据或闭合；`tested_clean` 也不能
+单独证明 ruled_out。当前覆盖由原 owner 按证据身份、适用条件与健康状态判断；不把 exact
+query/hash/identity 的结果扩张到整个 endpoint/family，结构性 `n_a` 仍需真实不适用依据。
 
 ## Feature / Workflow Closure
 
@@ -92,7 +52,7 @@ Before any feature or workflow is summarized as `tested`, its evidence must stat
 - Validation depth: which boundaries or variants were tested, including whether only one variant was tried.
 
 Anything not established must remain in the existing `unknown`, `queued`, `lead`,
-`signal`, `blocked`, `n/a`, or `dead-end` states with the reasons required above.
+`signal`, `candidate`, `blocked`, `n/a`, or `dead-end` states with the reasons required above.
 Do not add a parallel coverage state or schema for these residual lanes.
 
 ## Discovery Gap
@@ -103,7 +63,7 @@ Do not add a parallel coverage state or schema for these residual lanes.
 安全的证据生成动作。
 
 Evidence-driven depth does not mean evidence-only testing. 没有强证据时，
-可通过 Discovery mode actively generate new evidence。Autopilot 是否结束按共享 Finish Contract，
+可通过 Discovery mode actively generate new evidence。Autopilot 是否结束按 `commands/autopilot.md` 的 Finish Contract，
 依据实际用户/范围/预算边界、阻止有用工作的真实阻塞，或有证据支持的无值得继续路线判断。
 保存 handoff、已有报告数量、匿名 401/403 或尚未准备可获取的会话本身不是停止依据。
 证据路径不可达、红线或材料缺失按事实记 `blocked`；`dead-end` 必须有条件化反证，
@@ -127,19 +87,7 @@ COVERAGE SUMMARY
 
 ## 通用续跑 Gate
 
-任何具体证据如果只被写成“需要查看/需要查询/需要人工测试/后续继续”，不算覆盖完成。
-
-不得仅以泛泛 TODO 声称覆盖；按实际证据保留以下状态和可恢复的下一意图：
-
-- `tested`：完成了低风险验证，并写明证据
-- `dead-end`：证据在记录条件下已证伪、版本不受影响或路径确实不可达；低价值不属于此状态
-- `blocked`：写明缺什么材料、为什么当前不能安全继续
-- `lead` / `signal` / `candidate`：保留为明确下一步，而不是泛泛 TODO
-
-适用范围不限于某个漏洞类别或某种技术栈；包括组件版本、暴露路由、
-浏览器/API/JS/source 线索、隐藏参数、认证/授权、注入/RCE、SSRF/XXE、
-文件/上传/解析、OAuth/JWT/CSRF、Race、业务流程、云/CI/CD/secret 等所有
-高价值可行动线索。
+泛泛 TODO 或“后续人工测试”不是覆盖；保留具体证据问题、未完成状态和可恢复的下一意图。
 
 如果 `tools/action_queue.py summary --target <target>` 显示仍有 active action，
 不能声称全面完成。有合理停止依据时保留 active/pending 与明确 handoff 结束本轮；
@@ -149,34 +97,15 @@ claim 及终态心跳仍按原 owner 完成；预算不能取消这些义务。
 
 ## 矩阵检查
 
-如果当前目标有 recon、findings、scanner_pass 或手工测试结果，先使用结构化覆盖矩阵：
+复用当前有效视图；需要查询或发布更新的派生缓存时按 `commands/check-coverage.md`，
+普通 checkpoint 不要求 rebuild。`find-gaps --limit N` 返回全部未处置格的窗口、总数和
+展开方式，不按路径词/类别分数筛选，也没有 `--all`。
 
-```bash
-python3 tools/coverage_matrix.py rebuild --target <target>
-python3 tools/coverage_matrix.py find-gaps --target <target>
-```
-
-`find-gaps` 返回全部未处置的覆盖格；`--limit N` 只限制展示窗口并返回总数。
-不再按路径词或类别分数过滤，也不另设 `--all` 视图。哪些缺口值得追、如何测试，
-由 Claude 根据原始证据和目标语义判断；矩阵枚举不等于逐格实测清单。
-**解释义务落在 AI 判断值得关注但选择不追的 gap 上**，不是所有自动组合。
-
-矩阵不是唯一真相，而是防偷懒的 evidence hint ledger：
-
-- 解释义务是“**解释你选择不追的高价值 gap**”：默认视图中你实际追过、并已有
-  状态/证据的项不需要逐格交代；没有追的高价值 gap 必须解释——推进为
-  lead/signal/candidate、blocked、n/a、dead-end 或有理由的 defer，写明理由。
-- 未解释的 AI-actionable `find-gaps` 非空：只能 checkpoint 或继续，不能声称全面完成。
-- raw `find-gaps` 可以被 Claude 基于 browser/source/JS、ledger、case_state、业务语义和 raw evidence 解释为 covered / n/a / low-evidence / blocked / intentionally deferred；必须写明理由。
-- `find-gaps` 为空：还要检查 `/surface` Workflow Leads、target memory dead ends、unsafe-skipped、blocked/n/a。
-- rebuild 后 endpoint 为空：说明输入不足，应标记为 `unknown` 或 `blocked`，而不是 `tested`。
-- 被红线阻止的 gap 应记录为 `blocked: red-line`，不能用危险动作补覆盖。
-
-如果存在高价值 `unknown`，不能说“完成全面测试”，只能说：
-
-```text
-本轮覆盖了 X；仍未覆盖 Y；下一步建议 Z。
-```
+- AI 根据原件和目标语义选择值得追的 gap；矩阵枚举不等于逐格必测清单。
+- 解释选择不追的高价值 gap：真实状态、证据或延期理由。未解释的高价值项仍在时，
+  不声称全面完成；有合理停止依据可保留残留结束本轮。
+- 零 gap 仍要核对 `/surface` Workflow Leads、目标经验、unsafe-skipped、blocked/n/a。
+  空 endpoint 或缺输入保留 unknown/blocked，不算 tested。
 
 ## 高价值 surface
 
@@ -196,15 +125,8 @@ python3 tools/coverage_matrix.py find-gaps --target <target>
 
 ## 和红线的关系
 
-覆盖基线不能覆盖红线。
-
-如果某个 lane 需要高压流量或破坏性状态改变，只能标记为：
-
-```text
-blocked: red-line
-```
-
-并写出低风险替代验证方式。
+覆盖要求不能推翻红线。`blocked: red-line` 指出具体动作与破坏性效果，说明低风险替代；
+不能用高压流量或不可控状态变化凑覆盖。
 
 ## 和目标层的关系
 

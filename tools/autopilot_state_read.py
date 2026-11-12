@@ -419,7 +419,7 @@ def _has_js_read_signal(recon_dir: str, surface_context: dict) -> bool:
 
 
 def _read_batch_lines(path: Path) -> list[str]:
-    """Read a small batch index file with stable de-duplication."""
+    """Read normalized batch entries, retaining retry order for batch_progress."""
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -431,7 +431,7 @@ def _read_batch_lines(path: Path) -> list[str]:
             value = value[2:]
         if value:
             values.append(value)
-    return list(dict.fromkeys(values))
+    return values
 
 
 def _read_batch_manifest_completed(path: Path) -> list[str]:

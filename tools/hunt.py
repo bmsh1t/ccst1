@@ -778,12 +778,15 @@ def setup_wordlists():
     log("ok", f"Wordlists ready in {WORDLIST_DIR}")
 
 
-def run_recon(domain, quick=False, deep=False):
+def run_recon(domain, quick=False, deep=False, collect=""):
     """Run recon engine on a classified target."""
     supplied_target = str(domain or "").strip()
     target_info = classify_target(domain)
     normalized_target = target_info["target"]
     recon_target = supplied_target if "://" in supplied_target else normalized_target
+    if collect and (collect not in {"katana", "ffuf"} or not deep or quick
+                    or target_info["kind"] in {"list", "cidr"}):
+        raise ValueError("Recon --collect requires deep Katana/FFUF on an existing single target")
     list_count = 0
     if target_info["kind"] == "list":
         try:
@@ -814,8 +817,11 @@ def run_recon(domain, quick=False, deep=False):
         if target_info["kind"] == "list":
             per_target = 900 if quick else 14400 if deep else 7200
             timeout = max(1800, min(43200, per_target * max(list_count, 1)))
+        command = ["bash", script, recon_target, recon_flag]
+        if collect:
+            command.extend(["--collect", collect])
         returncode = run_live_argv_command(
-            ["bash", script, recon_target, recon_flag],
+            command,
             cwd=BASE_DIR,
             env=child_env,
             timeout=timeout,
@@ -1113,6 +1119,7 @@ def _hunt_target_impl(
     scanner_full=False,
     scanner_skip="",
     ctf_mode=False,
+    recon_collect="",
 ):
     """Run the full hunt pipeline on a single canonical target."""
     target_info = classify_target(domain)
@@ -1150,7 +1157,9 @@ def _hunt_target_impl(
                         last_executed_workflow="run_recon_started",
                         ctf_mode=ctf_mode,
                     )
-                if deep:
+                if recon_collect:
+                    result["recon"] = run_recon(domain, deep=True, collect=recon_collect)
+                elif deep:
                     result["recon"] = run_recon(domain, quick=quick, deep=True)
                 else:
                     result["recon"] = run_recon(domain, quick=quick)
@@ -1282,9 +1291,14 @@ def hunt_target(
     scanner_skip="",
     ctf_mode=False,
     context_file=None,
+    recon_collect="",
 ):
     """Run one target pipeline while preventing duplicate long phases."""
     target_info = classify_target(domain)
+    if recon_collect and (not deep or quick or not recon_only or scan_only
+                          or recon_collect not in {"katana", "ffuf"}
+                          or target_info["kind"] in {"list", "cidr"}):
+        raise ValueError("--recon-collect requires --deep --recon-only and a single target")
     canonical_target = target_info["target"]
     auth_session = _active_auth_session()
     context_file = resolve_context_file(context_file, auth_session.context_file)
@@ -1293,7 +1307,7 @@ def hunt_target(
         auth_session.bind_target(domain)
     if target_info["kind"] != "list":
         initialize_target_store(BASE_DIR, canonical_target)
-    if not os.path.exists(os.path.join(WORDLIST_DIR, "common.txt")):
+    if not recon_collect and not os.path.exists(os.path.join(WORDLIST_DIR, "common.txt")):
         setup_wordlists()
     execution_target = str(domain).strip() if "://" in str(domain) else canonical_target
     return _hunt_target_impl(
@@ -1305,6 +1319,7 @@ def hunt_target(
         scanner_full=scanner_full,
         scanner_skip=scanner_skip,
         ctf_mode=ctf_mode,
+        recon_collect=recon_collect,
     )
 
 
@@ -1324,6 +1339,8 @@ Examples:
     parser.add_argument("--target", type=str, help="Specific target (domain, IP, CIDR, or primary-domain batch file) to hunt")
     parser.add_argument("--quick", action="store_true", help="Quick Recon and smaller bounded Nuclei origin batch")
     parser.add_argument("--recon-only", action="store_true", help="Only run reconnaissance")
+    parser.add_argument("--recon-collect", choices=("katana", "ffuf"), default="",
+                        help="Collect only the next deep Katana or FFUF batch from existing live inputs")
     parser.add_argument("--scan-only", action="store_true", help="Only run bounded upstream Nuclei over cached live inputs")
     parser.add_argument("--scanner-full", action="store_true", help="Use the larger bounded Nuclei origin batch even when Recon is quick")
     parser.add_argument(
@@ -1347,6 +1364,10 @@ Examples:
     )
     add_cli_args(parser, include_cookie=False, include_context=True)
     args = parser.parse_args()
+    if args.recon_collect and (not args.target or not args.deep or args.quick
+                              or not args.recon_only or args.scan_only or args.report_only
+                              or args.status or args.setup_wordlists):
+        parser.error("--recon-collect requires --target --deep --recon-only")
     try:
         reject_unsupported_continuation(BASE_DIR, args.target or "", args.context_file,
                                         executor="Hunt scanner pipeline")
@@ -1427,6 +1448,7 @@ Examples:
                 scanner_skip=args.scanner_skip,
                 ctf_mode=ctf_mode,
                 context_file=args.context_file,
+                recon_collect=args.recon_collect,
             )
         except (RuntimePhaseBusy, StoreError, ValueError) as exc:
             log("warn", str(exc))

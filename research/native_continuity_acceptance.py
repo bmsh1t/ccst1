@@ -92,7 +92,7 @@ def tool_results(value, tool_id):
 
 def check_rejection(reason, binding, phase):
     expected = ('Known runnable owner work remains' if phase == 'entry'
-                else 'Checkpoint global review with termination bound to this session/invocation')
+                else 'termination_mismatch:')
     explanation, marker, host = reason.partition('\nHost binding: ')
     assert expected in explanation and marker, 'expected current Stop rejection missing'
     host = json.loads(host)

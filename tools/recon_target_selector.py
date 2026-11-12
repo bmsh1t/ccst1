@@ -16,9 +16,9 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 try:
-    from tools.artifact_io import write_text_atomic as _atomic_write
+    from tools.artifact_io import publish_bytes_create_only, write_text_atomic as _atomic_write
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from artifact_io import write_text_atomic as _atomic_write
+    from artifact_io import publish_bytes_create_only, write_text_atomic as _atomic_write
 
 
 try:
@@ -34,7 +34,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 STATE_SCHEMA = 1
-FFUF_INPUT_POLICY = hashlib.sha256(b"ffuf:exact-selected-origin:v1").hexdigest()
+FFUF_INPUT_POLICY = hashlib.sha256(b"ffuf:exact-selected-origin:unfiltered-http-receipts:v2").hexdigest()
 BASE_DIR = Path(__file__).resolve().parents[1]
 
 def _utc_now() -> str:
@@ -56,6 +56,35 @@ def _sha256_file(path: Path) -> str:
 def _fingerprint_urls(urls: list[str]) -> str:
     material = "\n".join(sorted(urls)).encode("utf-8")
     return hashlib.sha256(material).hexdigest()
+
+
+def _word_progress(state: dict) -> dict[str, int]:
+    """Validate optional FFUF progress without changing shared collection state."""
+    if "word_count" not in state and "word_offsets" not in state:
+        return {}
+    total, offsets = state.get("word_count"), state.get("word_offsets")
+    if (type(total) is not int or total <= 0 or not isinstance(offsets, dict)
+            or any(not isinstance(url, str) or type(offset) is not int
+                   or not 0 <= offset <= total for url, offset in offsets.items())):
+        raise ValueError("invalid FFUF word progress")
+    if any(offset == total and url not in state.get("completed", {}) for url, offset in offsets.items()):
+        raise ValueError("FFUF word progress is complete without a completed target")
+    return offsets
+
+
+def _word_accounting(state: dict, eligible: int) -> dict:
+    offsets = _word_progress(state)
+    if "word_count" not in state:
+        return {}
+    completed = state["completed"]
+    if len(set(offsets) | set(completed)) > eligible:
+        raise ValueError("FFUF word progress exceeds eligible targets")
+    total = state["word_count"] * eligible
+    done = state["word_count"] * len(completed) + sum(
+        offset for url, offset in offsets.items() if url not in completed
+    )
+    return {"word_count": state["word_count"], "words_total": total,
+            "words_completed": done, "words_remaining": total - done}
 
 
 def _normalize_url(raw: str) -> str:
@@ -155,17 +184,20 @@ def _load_state(
     active = payload.get("active", [])
     if not isinstance(active, list) or any(not isinstance(item, str) for item in active):
         raise ValueError(f"invalid active batch in Recon sampling state: {path}")
-    if str(payload.get(fingerprint_field) or "") != wordlist_sha256:
+    if (str(payload.get(fingerprint_field) or "") != wordlist_sha256
+            or str(payload.get("scope_hash") or "") != scope_hash
+            or (fingerprint_field == "wordlist_sha256"
+                and payload.get("input_policy_sha256") != FFUF_INPUT_POLICY)):
         completed = {}
         payload["last_selected"] = ""
-    if str(payload.get("scope_hash") or "") != scope_hash:
-        completed = {}
-        payload["last_selected"] = ""
+        for name in ("word_count", "word_offsets", "active_word_pages"):
+            payload.pop(name, None)
     if fingerprint_field == "wordlist_sha256":
-        if payload.get("input_policy_sha256") != FFUF_INPUT_POLICY:
-            completed = {}
-            payload["last_selected"] = ""
         payload["input_policy_sha256"] = FFUF_INPUT_POLICY
+        offsets = _word_progress(payload)
+        if "word_count" in payload:
+            payload["word_offsets"] = {url: offset for url, offset in offsets.items() if url in urls}
+        payload.pop("active_word_pages", None)
     payload["completed"] = {
         url: value
         for url, value in completed.items()
@@ -189,6 +221,19 @@ def _pick_batch(candidates: list[dict], completed: set[str], limit: int, after: 
             + [item for item in pending if item["url"] <= after])[:limit]
 
 
+def batch_progress(targets: list[str], completed: list[str], failed: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """Keep untried targets first, then failures in least-recently-attempted order."""
+    current = set(targets)
+    completed = list(dict.fromkeys(item for item in completed if item in current))
+    done = set(completed)
+    failed = list(reversed(dict.fromkeys(
+        item for item in reversed(failed) if item in current and item not in done
+    )))
+    attempted = done | set(failed)
+    pending = [item for item in dict.fromkeys(targets) if item not in attempted]
+    return completed, failed, [*pending, *failed]
+
+
 def select_targets(
     *,
     target: str,
@@ -200,10 +245,22 @@ def select_targets(
     wordlist_path: Path,
     limit: int,
     repo_root: str | Path = BASE_DIR,
+    word_limit: int = 0,
+    wordlist_dir: Path | None = None,
 ) -> dict:
     if limit < 1:
         raise ValueError("target selection limit must be positive")
-    wordlist_sha256 = _sha256_file(wordlist_path)
+    if type(word_limit) is not int or word_limit < 0 or (word_limit and wordlist_dir is None):
+        raise ValueError("word_limit must be nonnegative; paging requires wordlist_dir")
+    words = None
+    if word_limit:
+        with wordlist_path.open("rb") as handle:
+            words = list(handle)
+        if not words:
+            raise ValueError("cannot page an empty FFUF wordlist")
+        wordlist_sha256 = hashlib.sha256(b"".join(words)).hexdigest()
+    else:
+        wordlist_sha256 = _sha256_file(wordlist_path)
     context = load_scope_context(repo_root, target)
     scope_ref, scope_hash = context.source_ref or context.root_target, context.scope_hash
     candidates = _read_candidates(httpx_path, urls_path, target, context)
@@ -216,7 +273,13 @@ def select_targets(
         scope_ref=scope_ref,
         scope_hash=scope_hash,
     )
-    return _publish_selection(target, candidates, state, state_path, plan_path, targets_path, limit)
+    if words is not None:
+        if "word_count" in state and state["word_count"] != len(words):
+            raise ValueError("FFUF word count disagrees with the bound wordlist")
+        state["word_count"] = len(words)
+        state.setdefault("word_offsets", {})
+    return _publish_selection(target, candidates, state, state_path, plan_path, targets_path,
+                              limit, words=words, word_limit=word_limit, wordlist_dir=wordlist_dir)
 
 
 def select_collection(*, target: str, urls: list[str], identity: str, state_path: Path,
@@ -237,7 +300,7 @@ def select_collection(*, target: str, urls: list[str], identity: str, state_path
             if not context.allows_active(url):
                 continue
         eligible.add(url)
-    fingerprint = _fingerprint_urls([identity, *sorted(eligible)])
+    fingerprint = _fingerprint_urls([identity, f"origins_only={origins_only}"])
     state = _load_state(state_path, target, fingerprint, eligible,
                         scope_ref=context.source_ref or context.root_target,
                         scope_hash=context.scope_hash, fingerprint_field="collection_fingerprint")
@@ -246,9 +309,26 @@ def select_collection(*, target: str, urls: list[str], identity: str, state_path
 
 
 def _publish_selection(target: str, candidates: list[dict], state: dict, state_path: Path,
-                       plan_path: Path, targets_path: Path, limit: int) -> dict:
+                       plan_path: Path, targets_path: Path, limit: int, *,
+                       words: list[bytes] | None = None, word_limit: int = 0,
+                       wordlist_dir: Path | None = None) -> dict:
     completed = set(state["completed"])
     selected = _pick_batch(candidates, completed, limit, str(state.get("last_selected") or ""))
+    if words is not None:
+        state["active_word_pages"] = {}
+        for number, item in enumerate(selected, 1):
+            start = state["word_offsets"].get(item["url"], 0)
+            end = min(start + word_limit, len(words))
+            if start >= end:
+                raise ValueError("FFUF word progress is complete without a completed target")
+            binding = [state["target"], state["scope_hash"], FFUF_INPUT_POLICY,
+                       state["wordlist_sha256"], item["url"], start, end]
+            receipt = hashlib.sha256(json.dumps(binding).encode()).hexdigest()
+            page = {"start": start, "end": end, "receipt": receipt}
+            path = wordlist_dir / f"{number:04d}.txt"
+            publish_bytes_create_only(path, b"".join(words[start:end]))
+            state["active_word_pages"][item["url"]] = page
+            item["word_page"] = {**page, "path": str(path)}
     plan = {
         "schema": STATE_SCHEMA,
         "target": canonical_target_value(target),
@@ -264,6 +344,7 @@ def _publish_selection(target: str, candidates: list[dict], state: dict, state_p
         "exhausted": bool(candidates) and not selected and len(completed) >= len(candidates),
         "selected": selected,
         "generated_at": _utc_now(),
+        **_word_accounting(state, len(candidates)),
     }
     state["active"] = [item["url"] for item in selected]
     state["eligible_count"] = len(candidates)
@@ -298,23 +379,46 @@ def record_results(*, target: str, state_path: Path, results_path: Path,
     completed = state.get("completed")
     if not isinstance(completed, dict):
         raise ValueError(f"invalid completed map in Recon sampling state: {state_path}")
+    offsets = _word_progress(state)
+    pages = state.get("active_word_pages", {})
+    if (not isinstance(pages, dict)
+            or ("active_word_pages" in state and set(pages) != active)):
+        raise ValueError("invalid FFUF active word pages")
 
     seen: set[str] = set()
     for raw in results_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        url, separator, status = raw.partition("\t")
-        if not separator or not url or status not in {"ok", "partial", "failed"}:
+        fields = raw.split("\t")
+        if len(fields) not in (2, 3):
+            raise ValueError(f"invalid Recon sampling result row: {results_path}")
+        url, status = fields[:2]
+        if not url or status not in {"ok", "partial", "failed"}:
             raise ValueError(f"invalid Recon sampling result row: {results_path}")
         if url not in active:
             raise ValueError(f"Recon sampling result is not part of active target batch: {url}")
         if url in seen:
             raise ValueError(f"duplicate Recon sampling result row: {url}")
+        page = pages.get(url)
+        if page is not None:
+            if (not isinstance(page, dict) or len(fields) != 3
+                    or fields[2] != page.get("receipt")
+                    or type(page.get("start")) is not int or type(page.get("end")) is not int
+                    or page["start"] != offsets.get(url, 0)
+                    or not 0 <= page["start"] < page["end"] <= state.get("word_count", 0)):
+                raise ValueError("FFUF result does not match the active word page")
+        elif len(fields) != 2 or pages:
+            raise ValueError("FFUF result has no matching active word page")
         seen.add(url)
         if status == "ok":
-            completed[url] = {"status": "ok", "completed_at": _utc_now()}
+            if page is not None:
+                offsets[url] = page["end"]
+            if page is None or page["end"] == state["word_count"]:
+                completed[url] = {"status": "ok", "completed_at": _utc_now()}
         else:
             completed.pop(url, None)
     state["completed"] = completed
     state["active"] = sorted(active - seen)
+    if "active_word_pages" in state:
+        state["active_word_pages"] = {url: page for url, page in pages.items() if url not in seen}
     state["updated_at"] = _utc_now()
     _atomic_json(state_path, state)
     return {
@@ -350,6 +454,7 @@ def load_rotation_status(repo_root: str | Path, target: str) -> dict:
             recorded_hash = str(payload.get("scope_hash") or "")
             if recorded_hash != scope_hash:
                 raise ValueError("Scope changed or binding missing; FFUF rotation must restart")
+        words = _word_accounting(state, eligible_count)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return {
             "status": "invalid",
@@ -368,6 +473,7 @@ def load_rotation_status(repo_root: str | Path, target: str) -> dict:
         "scope_hash": scope_hash,
         "plan": str(plan_path),
         "state": str(state_path),
+        **words,
     }
 
 
@@ -390,8 +496,10 @@ def collection_accounting(*, target: str, state_path: Path, plan_path: Path,
             or any(not isinstance(item, dict) or item.get("status") != "ok" for item in completed.values())
             or not isinstance(selected, list) or len(selected) > total):
         raise ValueError("invalid collection accounting counts")
+    words = "; ".join(f"{key}={value}" for key, value in _word_accounting(state, total).items())
     return (f"input_total={total}; selected={len(completed)}; remaining={total-len(completed)}; "
-            f"batch_selected={len(selected)}; selected_means=collected_successfully")
+            f"batch_selected={len(selected)}; selected_means=collected_successfully"
+            + (f"; {words}" if words else ""))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -408,6 +516,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan", type=Path, default=Path("dirs/ffuf_target_plan.json"))
     parser.add_argument("--targets", type=Path, default=Path("dirs/ffuf_targets.txt"))
     parser.add_argument("--wordlist", type=Path)
+    parser.add_argument("--word-limit", type=int, default=0,
+                        help="Maximum words per selected FFUF target; zero keeps the complete wordlist")
+    parser.add_argument("--wordlist-dir", type=Path, help="Run-local directory for selected word pages")
     parser.add_argument("--collection-identity")
     parser.add_argument("--origins-only", action="store_true")
     parser.add_argument("--results", type=Path)
@@ -442,6 +553,8 @@ def main(argv: list[str] | None = None) -> int:
                 targets_path=args.targets,
                 wordlist_path=args.wordlist,
                 limit=args.limit,
+                word_limit=args.word_limit,
+                wordlist_dir=args.wordlist_dir,
             )
         else:
             if args.results is None:

@@ -51,11 +51,12 @@ Runtime 管理，结构化假设由 Case 管理，Skill/知识选择由 AI 按�
 
 交接正文说明已证明的结论、仍未知的假设和当前阻塞；conditions 保留实际 origin、
 身份、对象及适用条件，next-intent 写具体下一问题。
-保存前从真实回执或已有登记选择证据，用 `python3 tools/target_store.py operations --target TARGET --id OPERATION_ID`
-展开选中批次（本来输出 JSON，不加 `--json`），核对实际步骤的 method、URL、身份/对象、
-原件中的响应及关键对照。支持、反对和必要对照的引用一起保留；引用存在、原件健康不等于支持结论。
+保存前从真实回执或已有登记选择证据，核对实际步骤的 method、URL、身份/对象、原始响应和必要对照。
+同一目标、步骤、原件及条件未变且已核对时直接复用；绑定不清、材料变化或首次接受子代理材料时，
+用 `python3 tools/target_store.py operations --target TARGET --id OPERATION_ID` 展开并核对原件（不加 `--json`）。
+支持、反对和必要对照的引用一起保留；引用存在、原件健康不等于支持结论。
 完整编号集中放在 `--operation-ref`；正文和 next-intent 用事实/条件说明对应关系，不重复抄编号。
-保存后消费真实回执，并回读核对正文、条件、下一意图和引用：
+保存成功后消费真实回执，并回读核对一次正文、条件、下一意图和引用；确认后仅在缺失、变化或冲突时再读：
 
 ```bash
 python3 tools/target_memory.py handoff '已证明的结论；未验证范围与阻塞' \

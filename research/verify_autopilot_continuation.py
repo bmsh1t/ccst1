@@ -21,6 +21,7 @@ def stage(source, root):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
     for name in ("commands/autopilot.md", "commands/autopilot-round.md",
+                 "skills/autopilot-protocol.md", "skills/autopilot-round-protocol.md",
                  "skills/runtime-protocol.md", "skills/src-hunter/SKILL.md", "agents/autopilot.md"):
         destination = root / name
         destination.parent.mkdir(parents=True, exist_ok=True)

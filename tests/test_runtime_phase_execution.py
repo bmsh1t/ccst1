@@ -202,6 +202,36 @@ def test_phase_busy_does_not_spawn_or_rewrite_marker(phase_root, entry, phase):
     assert state_file.read_bytes() == before
 
 
+@pytest.mark.parametrize("collector", ["katana", "ffuf"])
+def test_hunt_deep_local_collection_preserves_flags_lock_and_seed(phase_root, collector):
+    with ExitStack() as stack:
+        for name, value in {
+            "BASE_DIR": str(phase_root), "TOOLS_DIR": str(phase_root / "tools with spaces"),
+            "RECON_DIR": str(phase_root / "recon"), "_AUTH_SESSION": hunt.AuthSession(),
+            "_auto_log_session_summary": lambda *a, **k: None,
+        }.items():
+            stack.enter_context(patch.object(hunt, name, value))
+        stack.enter_context(patch("observation_inventory.sync_inventory"))
+        stack.enter_context(patch.object(hunt.CredentialStore, "export_to", lambda *a: None))
+        assert hunt._hunt_target_impl(URL, deep=True, recon_only=True, recon_collect=collector)["recon"]
+    record = json.loads((phase_root / "ready.json").read_text())
+    assert record["argv"] == [URL, "--deep", "--collect", collector]
+    assert record["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == URL
+    assert record["locks"] == [str(phase_root / "state" / TARGET / "locks/recon.lock")]
+
+
+@pytest.mark.parametrize("options", [
+    {"recon_collect": "ffuf"},
+    {"recon_collect": "katana", "deep": True, "recon_only": True, "quick": True},
+    {"recon_collect": "invalid", "deep": True, "recon_only": True},
+])
+def test_local_collection_rejects_invalid_modes_before_io(tmp_path, options):
+    with patch.object(hunt, "initialize_target_store") as initialize:
+        with pytest.raises(ValueError, match="recon-collect"):
+            hunt.hunt_target(TARGET, **options)
+        initialize.assert_not_called()
+
+
 @pytest.mark.parametrize("phase", ["recon", "scan"])
 def test_direct_child_exit_124_is_not_a_wrapper_deadline(phase_root, monkeypatch, phase):
     monkeypatch.setenv("PHASE_TEST_EXIT", "124")

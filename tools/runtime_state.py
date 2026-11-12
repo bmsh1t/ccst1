@@ -513,6 +513,8 @@ def _derive_current_status(
         return {"status": "partial", "reason": "last scanner phase failed; preserved results require review", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     if (recon.get("run_budget") or {}).get("partial"):
         return {"status": "partial", "reason": "recon run exceeded its budget and remains resumable", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    if any(name.startswith("collector:") for name in (recon.get("phase_gates") or {}).get("incomplete", [])):
+        return {"status": "partial", "reason": "recon collector failures still require review", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     if recon.get("ready"):
         return {"status": "complete", "reason": "recon is ready and finding/queue owners have no pending work", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     return {"status": "unavailable", "reason": "no current recon closure is available", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
@@ -856,7 +858,7 @@ def _latest_recon_phase_record(recon_dir: Path, phase: str) -> dict:
 
 
 def _phase_gate_state(recon_dir: Path) -> dict:
-    """Project the latest evidence gate for each recorded Recon phase."""
+    """Project phase gates and collector failures not superseded by success."""
     manifest = recon_dir / "recon_manifest.jsonl"
     latest: dict[str, dict] = {}
     repo_root = recon_dir.parent.parent
@@ -867,11 +869,22 @@ def _phase_gate_state(recon_dir: Path) -> dict:
                     item = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(item, dict) or item.get("record_type") != "recon_phase":
+                if not isinstance(item, dict):
                     continue
-                phase = str(item.get("phase") or "").strip()
+                record_type = item.get("record_type")
+                if record_type not in ("recon_phase", "recon_collector"):
+                    continue
+                phase = str(item.get("collector" if record_type == "recon_collector" else "phase") or "").strip()
                 if not phase:
                     continue
+                if record_type == "recon_collector":
+                    phase = f"collector:{phase}"
+                    status = str(item.get("status") or "").strip().lower()
+                    if status in {"ok", "success", "success_zero", "success-zero", "completed"}:
+                        latest.pop(phase, None)
+                    if status not in {"partial", "failed", "failure", "error", "incomplete"}:
+                        continue
+                    item = {**item, "phase": phase}
                 gate = gate_from_record(repo_root, item)
                 latest[phase] = {
                     "status": str(gate.get("status") or "partial"),

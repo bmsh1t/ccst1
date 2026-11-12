@@ -13,7 +13,7 @@ model: inherit
 
 Answer one surface-prioritization or missed-investigation-path question from the parent.
 The parent invokes this role explicitly under
-`commands/autopilot.md#surface-review`; description matching is not the automation trigger.
+`skills/autopilot-protocol.md#surface-review`; description matching is not the automation trigger.
 Use a fresh review context and the supplied facts, not an assumed conversation history.
 
 ## Input And Reading

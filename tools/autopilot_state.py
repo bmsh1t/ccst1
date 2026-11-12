@@ -170,9 +170,9 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
 
 try:
-    from tools.recon_target_selector import load_rotation_status
+    from tools.recon_target_selector import batch_progress, load_rotation_status
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from recon_target_selector import load_rotation_status  # type: ignore
+    from recon_target_selector import batch_progress, load_rotation_status  # type: ignore
 try:
     from tools.scope_source import load_scope_context
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -990,22 +990,12 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
     batch_dir = Path(repo_root) / "recon" / storage_key
     manifest_path = batch_dir / "batch_manifest.jsonl"
     current_entries = target_list_entries(resolved_target)
-    current_set = set(current_entries)
     completed = _read_batch_lines(batch_dir / "completed_targets.txt")
     if not completed:
         completed = _read_batch_manifest_completed(manifest_path)
-    completed = [item for item in completed if item in current_set]
-    failed = _read_batch_lines(batch_dir / "failed_targets.txt")
-    failed = [item for item in failed if item in current_set and item not in set(completed)]
-    artifact_pending = _read_batch_lines(batch_dir / "pending_targets.txt")
-    processed = set(completed) | set(failed)
-    # 当前 list 是 batch identity。旧 pending 仅提供顺序提示，新加入的输入也必须
-    # 进入本轮 pending，不能因为同 stem 的历史 artifact 被漏掉。
-    pending = [
-        item
-        for item in dict.fromkeys([*artifact_pending, *current_entries])
-        if item in current_set and item not in processed
-    ]
+    completed, failed, pending = batch_progress(
+        current_entries, completed, _read_batch_lines(batch_dir / "failed_targets.txt")
+    )
     runtime_state = load_runtime_state(repo_root, resolved_target)
     recon_in_progress = runtime_phase_in_progress(
         repo_root, resolved_target, "recon", runtime_state
@@ -1050,9 +1040,6 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
         next_action = "wait_recon"
     elif candidates:
         next_action = "select_completed_domain"
-    elif not pending and failed:
-        next_action = "batch_failed"
-        blocker = "all current batch entries failed and no pending target remains"
     else:
         next_action = "run_batch_recon"
 

@@ -1189,6 +1189,64 @@ def test_recon_phase_gates_are_projected_from_latest_manifest_rows(tmp_path):
     ]
 
 
+def test_local_collection_preserves_unrepaired_collector_failure(tmp_path):
+    from tools.autopilot_gate import _blocking_recon_phase_gate, _recon_phase_residuals, build_control_projection
+    from tools.autopilot_state import build_closure_projection
+    from tools.recon_gate import append_recon_record
+
+    TargetStore(tmp_path, "target.com").initialize()
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "live" / "httpx_full.txt").write_text("https://target.com [200]\n")
+    manifest = recon_dir / "recon_manifest.jsonl"
+    manifest.write_text('{not-json}\n{"record_type": []}\n')
+
+    def record(phase, status, *, collector=False):
+        append_recon_record(tmp_path, target="target.com", mode="deep", phase=phase,
+                            status=status, artifact="recon/target.com/recon_manifest.jsonl",
+                            count=0, collector=collector)
+
+    record("gau", "error", collector=True)
+    record("waybackurls", "unavailable", collector=True)
+    record("url_collection", "ok")
+    record("run_budget", "partial")
+    record("dir_fuzz", "ok")
+    record("run_budget", "ok")
+    matrix = {"endpoints": [{"endpoint": "/", "weight": 1.0,
+                              "cells": {"IDOR": {"status": "tested_clean"}}}],
+              "summary": {"total_cells": 1}}
+
+    for recovery, expected in ((None, True), ("unavailable", True), ("skipped", True), ("ok", False)):
+        if recovery:
+            record("gau", recovery, collector=True)
+        before = manifest.read_bytes()
+        full = inspect_recon_artifacts(tmp_path, "target.com")
+        fast = inspect_recon_artifacts_fast(tmp_path, "target.com")
+        assert full["phase_gates"] == fast["phase_gates"]
+        assert full["run_budget"] == fast["run_budget"]
+        assert full["run_budget"]["status"] == "ok"
+        assert full["run_budget"]["partial"] is False
+        assert full["phase_gates"]["incomplete"] == (["collector:gau"] if expected else [])
+        assert derive_state_view(tmp_path, "target.com")["derived"]["status"] == ("partial" if expected else "complete")
+        state = {"recon_artifacts": full, "next_action": "handoff", "has_recon": True}
+        residuals = _recon_phase_residuals(state)
+        assert _blocking_recon_phase_gate(state)[0] == ""
+        assert len(residuals) == int(expected)
+        if expected:
+            assert residuals[0]["gate"]["execution_status"] == "error"
+            assert residuals[0]["review_token"] == "recon:collector:gau:remaining=0"
+        closure = build_closure_projection(state, matrix)
+        if expected:
+            assert "recon_phase_review_required" in closure["reasons"]
+        reviewed = build_closure_projection(state, matrix, global_review={
+            "status": "valid", "review": {"status": "complete", "residual_unknowns": []}})
+        assert reviewed["can_claim_exhausted"] is (not expected)
+        control = build_control_projection({**state, "action_queue_next": {
+            "id": "independent-review", "action": "review saved browser evidence"}})
+        assert control["next_action"] == "resume_action_queue"
+        assert manifest.read_bytes() == before
+
+
 def test_inspect_recon_artifacts_reports_legacy_ffuf_without_parsing_it(tmp_path):
     TargetStore(tmp_path, 'target.com').initialize()
     recon_dir = tmp_path / "recon" / "target.com"

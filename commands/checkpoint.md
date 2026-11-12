@@ -92,6 +92,16 @@ Claude Autopilot 正常自动结束还需在同一 `complete` 复核提交
 耗尽声明，不抹去已核验的停止依据；`no_worthwhile_work` 仍需完整复核。
 交接与其他写回在读取最后一次 digest 之前完成；复核成功后不要为清除 handoff 重复改写。
 用户主动打断不需要先提交本表。
+Stop 返回 review_missing / review_invalid / review_incomplete / review_stale 或
+termination_missing / termination_mismatch 时，在当前会话按缺口补齐或重审；
+snapshot_stale 先用当前 host.state_command 刷新，再读 Closure。
+使用 Refresh 返回的最新调用身份。缺审查不等于仍有值得调查的工作；收尾可修复时
+继续完成收尾，不等人工“继续”，也不伪造证据或理由。确认提交成功后重读 Closure 再结束。
+以重读 Closure 的复核有效性诊断为准：带 basis 的复核在依据未变时仍有效，
+整体 snapshot_digest 可因 witness 等变化而不同；不要仅凭摘要不同重提复核或追查源码。
+只有明确 stale / invalid / snapshot_stale 等诊断才按相应缺口修复；其余停止条件仍须满足。
+`review_follow_up`（包括 form_insufficient 内的 review_status=follow_up）先完成或
+重新评估已记录的 next_action，再提交有据的停止审查；空 missing_tokens 不代表可结束。
 全局复核只接受 `--evidence-refs-json`；`--evidence-ref` 属于 lane-result，
 与 `--record-global-review` 同用时返回 `2`，不写 witness，即使同时传入合法 JSON。
 证据列表缺失、为空、超限或引用不属于目标的非空文件时，诊断的

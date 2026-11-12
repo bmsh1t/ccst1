@@ -139,7 +139,8 @@ def verify(project, runtime):
     store.set_active_goal(command_id="goal:restore", goal="", actor="selfcheck")
 
     # Real files/locks/source integrity; only external owner acquisition is injected below.
-    for name in (*dict(CONTEXT_SOURCES), "tools/autopilot_host.py", "tools/claude_hook_contract.py"):
+    for name in (*dict(CONTEXT_SOURCES), "commands/autopilot.md", "commands/autopilot-round.md",
+                 "tools/autopilot_host.py", "tools/claude_hook_contract.py"):
         destination = project / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(SOURCE / name, destination)
@@ -380,7 +381,7 @@ def verify(project, runtime):
         delivered(refresh(), updated)
         assert saved()["started_at"] == initial["started_at"]
 
-        command = project / "commands/autopilot.md"
+        command = project / "skills/autopilot-protocol.md"
         original = command.read_bytes()
         for changed in (None, b"", b"---\nunterminated", original.replace(b"## Shared Automation", b"Missing heading", 1)):
             if changed is None:
@@ -454,7 +455,10 @@ def verify_runtime(project, runtime):
             host.write_json_atomic(runtime / ".ccst-installed.json", receipt)
             assert not runtime_doctor.compare_runtime(project, runtime)["critical_clean"], change
     command = "---\nallowed-tools: Bash\n---\nentry command\n## Shared Automation\nOld body\n"
-    assert refreshable_source("commands/autopilot.md", command, command.replace("Old body", "New body"))
+    assert refreshable_source("skills/autopilot-protocol.md", command, command.replace("Old body", "New body"))
+    assert not refreshable_source("commands/autopilot.md", command, command.replace("Old body", "New body"))
+    assert not refreshable_source("skills/autopilot-protocol.md", command, command.replace("entry command", "changed command"))
+    assert not refreshable_source("skills/autopilot-protocol.md", command, command.replace("Bash", "Read"))
     assert not refreshable_source("commands/autopilot.md", command, command.replace("entry command", "changed command"))
     assert not refreshable_source("commands/autopilot.md", command, command.replace("Bash", "Read"))
     assert not refreshable_source("commands/recon.md", command, command.replace("Old body", "New body"))

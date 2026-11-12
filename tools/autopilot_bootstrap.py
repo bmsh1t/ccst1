@@ -291,7 +291,7 @@ _LANE_CONTRACTS = {
         "workflow, timing, or case-state evidence is next",
     ),
     "controller": (
-        "commands/autopilot.md#state-consumption-loop",
+        "skills/autopilot-protocol.md#state-consumption-loop",
         "no specialized lane is selected by the current state",
     ),
 }
@@ -320,7 +320,7 @@ def _lane_contract_text(repo_root: Path, ref: str) -> dict[str, Any]:
         "reason": "",
     }
     # Only markdown anchors under docs/ may be inlined; the controller lane
-    # points back at the command file and is deliberately left as a ref.
+    # points at the delivered shared protocol and is deliberately left as a ref.
     raw_ref = str(ref or "")
     if not raw_ref.startswith("docs/"):
         result["reason"] = "ref is not a docs/ markdown section; read the ref directly"

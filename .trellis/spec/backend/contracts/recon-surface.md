@@ -79,6 +79,8 @@ Wrong：审核通过后按当前路径再 Read。Correct：消费同次审核捕
 ```bash
 python3 tools/hunt.py --target <target> --scan-only --quick
 bash tools/vuln_scanner.sh <recon_dir> [--quick|--full] [--skip <modules>]
+python3 tools/hunt.py --target <target> --recon-only --deep --recon-collect ffuf
+bash tools/recon_engine.sh <target> --deep --collect katana
 ```
 
 每轮在 `findings/<target-key>/nuclei_runs/<run-id>/` 保存独立执行回执，
@@ -129,6 +131,13 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   在选择时清除派生 completed/last_selected，读取不报 exhausted、登记拒绝旧策略。
   Recon 在替换前通过现有 collector history 归档旧 state/plan；raw/Store/历史证据不改写。
   此策略仅用于 wordlist FFUF 状态；Katana/config/OpenAPI collection_fingerprint 不受影响。
+- Deep FFUF 每调用最多5目标、每目标512行；schema=1 的可选 `word_count/word_offsets/active_word_pages`
+  保存词页进度，末页成功才写 completed。`URL\tstatus\treceipt` 的 SHA receipt 绑定目标、Scope、
+  输入策略、完整字典、URL 和 `[start,end)`；失败整页重试，失效一起清词进度。字典字节保留空行、
+  注释、重复、CRLF 和末行语义；`words_completed/words_remaining` 是位置数，不是漏洞覆盖。
+  `check_ffuf_run` 要求 position 唯一完整1..N，Base64 `input.FUZZ` 匹配页词，允许乱序。
+  stdin `-w - -mc all -s -json -noninteractive` 保留完整 JSONL；`-ac`/过滤和 exit-zero 均不证明完整。
+  最新摘要只描述本批，旧页原件/摘要沿既有 history 保留；quick/normal/full 不启用词页默认。
 - FFUF 外层阶段同步执行，内部仍按既有预算并发多个 origin。全局 EXIT/TERM/INT 清理
   终止并等待 worker；worker 清理自己当前的 timeout/FFUF，保留未完成原件。只有 raw
   发布、摘要成功且无解析错误后才推进采样完成；取消不写 completed，不用 phase-state JSON
@@ -137,6 +146,9 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   缺响应、429/5xx、超时和坏 JSON 不得变成完成采集。结果先于 progress 提交。
   `recon_target_selector.collection_accounting` 读取同目标 state/plan 的成功进度；
   `recon_candidates.build_source_references` 保留原来源与行号，不确认源码归属。
+- Deep Katana 每批最多5seed，保留 `-d 3 -jc -kf all`、300秒超时及成功seed/旧发现复用。
+  局部 `--recon-collect` 只接受有 live/urls.txt 的 deep 单目标，复用锁/Auth/发布/收尾，保留 live/JS，
+  跳过其它主动采集；首次 deep 仍运行其余阶段。剩余词/seed 由 AI 选择续采，不驱动整轮循环。
 - Shell 显式调用 `recon_gate.append_recon_record` 发布 manifest；发布失败传播到 CLI。
   `runtime_state` 仅通过同一 gate reader 读取并重算健康，不补写或修复 manifest。
 - General Nuclei consumes only the origin-deduplicated bounded derivative of
@@ -192,6 +204,16 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   Closure exhaustion through the existing `recon_artifacts` projection. The
   summary alone does not create runnable work or block a reviewed host Stop;
   actual phase/CIDR continuations retain their own stopping obligations.
+- Recon records the final budget after observation/index finalization. Actual
+  phase or collector `partial/error/failed/incomplete` returns 75 at normal end,
+  preserving artifacts; batch and Hunt therefore cannot count that run as completed.
+  Existing nonzero/signal exits retain their codes. Optional tool absence is
+  recorded in phase notes without turning successful available collectors into
+  a retryable failure; bounded unselected inputs and soft-budget overruns are
+  advisory. Route-kind observations and the rebuildable Surface finalizer retain
+  their explicit nonfatal contracts, with failed receipts still visible.
+  CIDR page generation records `cidr_seed=ok` when that page is written; its
+  continuation artifact separately retains partial/next_offset/remaining hosts.
 - 常规 quick breadth 使用既有 single-target runtime lock；Deep、raw URL 数量或
   scanner-negative 不能自动触发第二次 broad nuclei。明确组件、CVE、路径或行为
   证据可触发独立 targeted templates，但不得伪装成常规 scanner completion。
@@ -208,6 +230,10 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   Readers must rebuild the gate from the current record `status` and artifact
   ownership; the persisted gate is historical metadata and cannot override a
   newly missing artifact or failed phase status.
+  Latest explicit collector failures are also projected as `collector:<name>` until
+  that collector succeeds; skipped/unavailable neither create nor erase failures.
+  A successful local run keeps its own budget/exit result while earlier failures
+  remain advisory review residuals, never evidence of exhaustion or forced reruns.
 - Bounded phases persist `gate.bounded` with `input_total`, `selected`,
   `remaining`, `continuation`, and `closure_blocking`.  The raw input remains
   authoritative; `remaining` is a resumable residual, not a reason to discard
@@ -272,6 +298,8 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
 | 显式 nuclei/cves/all skip | skipped、零 wrapper 退出；未执行不等完成或无漏洞 |
 | Recon soft budget exceeded but run reaches normal end | `run_budget.status=ok`, advisory telemetry only |
 | Recon parent/tool interruption or timeout | `run_budget.status=partial`, preserve artifacts, handoff |
+| FFUF 页缺位置/重复/错词/HTTP失败或回执绑定错误 | 不推进该页；保留原件和此前成功进度 |
+| 旧 gau error 后局部 FFUF 成功 | 本次 budget=ok；collector:gau 仍需审核，同 collector 成功才解除 |
 | summary 序列化/落盘失败 | 清理临时文件、非零退出；保留已落盘的本轮及历史原件 |
 | 正常上游退出、合法 JSONL | complete 或有 remaining 的 sampled，保留输入/raw/review；analysis not_run |
 | raw corpus 从 1 增至 19K、live/priority 不变 | `ordered_scan_count` 不变 |
@@ -295,6 +323,7 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   后台任务被 kill 后沿用旧 summary 宣称 `0 findings / scanner complete`。
 - Scanner 输入边界：Good 为 `3/2/1` 或整数文本保留 continuation/token；Base 为旧版缺字段或
   合法空 lanes；Bad 为把 `1.9/1.1/0.8` 截成 `1/1/0` 后宣称无剩余工作。
+- Deep：Good 为520词按512+8成功续采；Base 为旧 completed 复用；Bad 为按乱序末位置跳过失败词。
 
 ### 6. Tests Required
 
@@ -307,6 +336,9 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
 - 写入失败必须非零；保留原件并暴露非终态，不能声称完成。项目历史测试清单不代表本轮已运行。
 - `tests/test_recon_engine_script.py` 与 `tests/test_runtime_state.py`：软预算超限仍可调度
   后续阶段并投影为 advisory；真实中断才投影为 partial。
+- `test_autopilot_recon_rotation` / `test_ffuf_control_contract`：页连续覆盖、失败恢复、身份失效和
+  真实 stdin 输入；`test_runtime_phase_execution` 固定局部 argv/锁。隔离 loopback 验证两collector
+  续采、已完成零请求和旧材料保留；`test_runtime_state` 固定旧collector失败与Closure/独立工作。
 - `tests/test_autopilot_state_tool.py`：command/agent/rule 同时固定 wrapper、专项扩展和
   incomplete 语义。
 - 同文件 Scanner summary 回归：每个计数字段的损坏值覆盖 reader→Closure 与直接 gate；
@@ -330,6 +362,7 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
 
 ```text
 raw historical corpus -> general nuclei -> killed -> 复用旧 summary -> complete
+局部 FFUF 成功 -> 盖掉旧 gau error；FFUF exit0/乱序末 position -> 全字典完成
 int(fractional_count) -> remaining=0 -> valid；root *.json -> 无差别解析 Scanner summary
 ```
 
@@ -339,6 +372,7 @@ int(fractional_count) -> remaining=0 -> valid；root *.json -> 无差别解析 S
 raw corpus -> Surface/专项消费者
 live + priority -> Scope/Auth-owned origins -> bounded upstream -> raw/exit/status/remaining -> native review
 共享严格计数 -> 无效标记与 residual 保留；按文件归属排除 summary -> 独立 claim 继续可恢复
+本批结果 + 未修复collector回执 -> 原审核；页完整校验 -> 发布原件/摘要 -> 推进词页
 ```
 
 ## Scenario: Intel Advisory 完整性与版本闭环
@@ -935,6 +969,7 @@ not a vulnerability judgment layer.
   - `recon/<target_key>/dirs/ffuf_results.jsonl.gz`
   - `recon/<target_key>/dirs/ffuf_summary.json`
   - `python3 tools/recon_adapter.py --recon-dir <dir> --ffuf-control-size --controls <jsonl>`
+  - `python3 tools/recon_adapter.py --recon-dir <dir> --check-ffuf-run --results <jsonl> --wordlist <file>`
 - AI-selected focused FFUF run:
   - `ffuf -u '<evidence-backed-template-with-FUZZ>' -w '<run-dir>/wordlist.txt' ... -s -json`
   - `recon/<target_key>/focused_fuzz/<run_id>/dirs/ffuf_results.jsonl.gz`
@@ -980,10 +1015,17 @@ not a vulnerability judgment layer.
   `recon/<target_key>/history/collectors/<run_timestamp>/` before publishing the
   current generation. The archive is retention-only and never becomes default
   scanner input; failure to archive leaves the prior collector artifact in place
-  and records an error.
+  and records an error, retaining the current staging path. Raw union/collector
+  merges explicitly propagate read and publication failures; neither old gzip
+  nor staging may be deleted on failure. GC protects both the physical `.gz`
+  path and its uncompressed logical reference.
 - Runtime numeric settings are validated before recon I/O. HTTP crawling and
   DNS/port tools use the shared bounded rate settings, and direct httpx/naabu/nmap
   phases have hard per-phase timeouts in addition to the outer process timeout.
+  `run_with_timeout` owns GNU timeout's child group through local subshell traps;
+  outer cancellation and inner deadline both reclaim descendants/locks while
+  preserving stdin, exit status and the caller's EXIT trap. `--foreground` alone
+  cannot reclaim command descendants.
 - The canonical port artifact retains host identity. Runtime, Observation
   Inventory, Surface, and Autopilot prefer `open_host_ports.txt` and fall back to
   `open_ports_all.txt` only for legacy fixtures; a current empty preferred file
@@ -1030,10 +1072,13 @@ not a vulnerability judgment layer.
 - Baseline control and main wordlists use `-w -` with explicit file stdin. FFUF
   parses colons in path arguments as keyword delimiters even when shell-quoted;
   target keys and ancestor paths must not change request substitution.
-- Control-size requires exactly two decoded observations and no reader errors;
-  invalid controls raise `ValueError` (CLI JSON error, exit 2). Valid zero means
-  no size filter, not a control failure. Shell logs errors before clearing its
-  local filter value; the aggregate summary reader remains optional/multi-host.
+- Control-size requires two decoded observations, no reader errors and no
+  408/429/5xx or invalid HTTP status; invalid controls raise `ValueError` (CLI JSON
+  error, exit 2). Size is an observation only: main uses `-mc all` without `-fs`.
+  Main completion requires one valid response per stdin wordlist line and no
+  temporary HTTP failure; exit-zero with missing responses is incomplete.
+  Blank/comment/duplicate lines are retained without `-ic`; the final line need
+  not end with a newline. The aggregate summary reader remains optional/multi-host.
 - High-frequency runtime/status readers may consume `ffuf_summary.json` only;
   parsing legacy giant root JSON is an explicit adapter operation.
 - Baseline FFUF remains the automatic, fixed, bounded breadth sensor. Focused
@@ -1089,9 +1134,11 @@ not a vulnerability judgment layer.
   output that corrupts Claude hints or manifest counts.
 - Summary next-step wording -> points to evidence pack and optional scanner quick,
   not a mandatory scanner-first flow.
-- FFUF succeeds with zero observations -> `dir_fuzz=ok`, `count=0`; any host,
-  compression, control, or parse failure -> `partial` while preserving valid
-  result lines; missing tool/live URL/wordlist -> `skipped`.
+- Baseline FFUF with a nonempty wordlist but missing/zero responses, HTTP
+  408/429/5xx, or control/parse failure -> `partial`, preserving result lines
+  without advancing completion. Compression/publication failure retains worker
+  originals and returns nonzero before receipts; missing tool/live URL/wordlist
+  -> `skipped`. Completed collection does not establish vulnerability coverage.
 - Main success with invalid controls -> host/phase `partial`, `succeeded=1`,
   `failed=0`, `control_failed=1`; retain observations, do not advance completed
   rotation. Missing/empty/bad/count-invalid controls never become successful 0.
@@ -1148,6 +1195,8 @@ not a vulnerability judgment layer.
   evidence exists; AI chooses another discovery lane without focused fuzz.
 - Good: a colon-containing worker path still sends both random misses; invalid
   controls keep a successful main observation reviewable and the host retryable.
+- Good: one main request returns 200 and another disconnects; FFUF exit 0 still
+  leaves the host incomplete. Same-length 403/429 observations remain in raw.
 - Bad: FFUF exits 0 after requesting literal `/FUZZ`, then a one-row control
   artifact returns 0 and marks that host completed.
 - Bad: merge a generic API dictionary after baseline misses, write focused
@@ -1176,7 +1225,10 @@ not a vulnerability judgment layer.
   and does not expand coverage.
 - `tests/test_ffuf_control_contract.py` covers control CLI errors/valid zero/size,
   optional and multi-host summaries, real phase/selector partial and retry,
-  retained main evidence, and real loopback FFUF stdin under colon/space paths.
+  retained main evidence, compression failure, and real loopback FFUF stdin and
+  disconnects under colon/space paths. `tests/test_recon_integrity.py` covers
+  read/archive/publication failure preservation, logical gzip references, and
+  inner/outer timeout cleanup with inherited locks and preserved stdin/traps.
 - Autopilot doc tests must assert fresh flow keeps browser/source/JS truth before
   scanner quick.
 - `tests/test_focused_fuzz_docs.py` must assert baseline/focused/AI-decision
@@ -1891,13 +1943,28 @@ CLI: `--select --collection-identity ID [--origins-only]`, then existing `--reco
 
 ### 3. Contracts
 
-- Derived collection state binds target, Scope hash and collection/input fingerprint.
+- Derived collection state binds target, Scope hash and collection configuration fingerprint
+  (`identity` plus `origins_only`); the inventory fingerprint is tracked separately.
   `last_selected` rotates failures behind the unvisited tail; only published `ok`
-  results enter `completed`. A missing result never completes an input. Changed
-  Scope/config/input resets completion; old material remains discovery history.
+  results enter `completed`. A missing result never completes an input. Inventory
+  additions keep completed entries; removals prune only absent entries. Changed
+  Scope/config/origin policy resets completion; old material remains discovery history.
+  Legacy collection fingerprints containing inventory invalidate once on first selection.
+- Domain-list batches share `recon_target_selector.batch_progress` with Autopilot:
+  untried inputs first, then failures in least-recently-attempted order. The existing
+  failed list keeps each target's last occurrence; success removes its failure.
+  `pending` and `remaining` include failures; only successful child exits complete
+  a target. Each call obeys the existing batch size; full/reset/Scope invalidation
+  remains unchanged. Historical attempt receipts stay in `batch_manifest.jsonl`.
+- URL parameter inventory extracts every nonempty raw query key, retaining repeated
+  counts, encoded spelling, empty values and valueless flags. Fragment text is ignored;
+  `param_frequency.txt`, `unique_params.txt` and `interesting_params.txt` keep their formats.
 - Katana selects up to 50 seeds in the parent; success merges old/current URL output.
   Retain per-run JSONL, require an actual seed response, and keep an origin with
   transport/429/5xx errors pending even when Katana exits zero.
+  Request-only rows without `response` or `error` are discovery records (including
+  duplicate-body output), not successful responses or failed requests. Keep their
+  URLs; a missing seed response, explicit error or malformed response stays partial.
   Config selects up to 30 unique origins and retains hit/HTTP receipts. Metadata
   selects the next bounded origins and merges prior same-Scope rows; history keeps
   replaced errors. Collection exhaustion is not vulnerability coverage.
@@ -1920,6 +1987,8 @@ CLI: `--select --collection-identity ID [--origins-only]`, then existing `--reco
 
 Failure in first sample → next tail then retry; exhausted → zero new selected requests;
 changed Scope → reject; config 503/429 → incomplete; missing page → no fabricated URL.
+New URL → retain prior completion; persistent batch failures → rotate on later calls,
+never remove them from pending; successful retry → clear the current failure marker.
 
 ### 5. Good / Base / Bad Cases
 
@@ -1931,6 +2000,11 @@ Bad: rotating only input while replacing old output, or counting a failed batch 
 Isolated production-copy assertions in task `10-23-autopilot-reliability-cost/research`:
 rotation/failure/reset, real loopback status/redirect/revocation, actual FFUF timing,
 old batch retention, exhausted no requests and JS source binding. No real targets.
+`tests/test_recon_integrity.py` additionally exercises query outputs, collection
+inventory/config changes and real Shell batch continuation with Autopilot projections.
+Task `11-12-recon-local-acceptance` records real loopback httpx/Katana/ffuf/curl
+collection, deep JS extraction, 503 recovery and incremental seeds; it also covers
+partial exit propagation and advisory/missing-tool distinctions.
 
 ### 7. Wrong vs Correct
 

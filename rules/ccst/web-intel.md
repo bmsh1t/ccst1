@@ -50,8 +50,8 @@ Web Search、Grok、smart-search、浏览器和其他 provider 只负责发现�
 }
 ```
 
-写入后运行 `/intel`，再让 `/autopilot` 重新读取状态。精确版本不匹配时，适用性降为
-`unknown`；来源不可用写 `status=blocked` 并交接，不得写成 `not_affected` 或 clean。
+写入后运行 `/intel`，再让 `/autopilot` 读状态。`affected/not_affected` 缺精确版本匹配则降为 `unknown`；
+`likely` 保留版本待证。来源不可用记 `status=blocked` 并交接，不得写成 `not_affected` 或 clean。
 
 ## 续跑顺序
 

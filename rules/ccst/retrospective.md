@@ -5,24 +5,16 @@
 
 ## 目的
 
-每次重要会话结束前，回答：
-
-- 什么有效？
-- 什么无效？
-- 漏了什么？
-- 哪些线索还值得继续？
-- 哪些经验可复用？
-- 哪些 Skill 流程需要优化？
-- 哪些规则需要调整？
+重要会话结束时交代什么有效、什么无效、漏了什么、哪些线索与方法值得保留，以及 Skill/Rules 的缺口。
 
 ## 沉淀分流
 
 | 内容类型 | 写入位置 |
 |---|---|
-| 只属于当前目标的线索 | 目标层 `lead`，见[完整写回示例](#写入目标层) |
-| 当前目标下一步 | 目标层 `next`，见[完整写回示例](#写入目标层) |
-| 当前目标无效方向 | 目标层 `dead-end`，见[完整写回示例](#写入目标层) |
-| 会话交接摘要 | 目标层 `handoff`，见[完整写回示例](#写入目标层) |
+| 只属于当前目标的线索 | 目标层 `lead`，见[写回合同](#写入目标层) |
+| 当前目标下一步 | 目标层 `next`，见[写回合同](#写入目标层) |
+| 当前目标无效方向 | 目标层 `dead-end`，见[写回合同](#写入目标层) |
+| 会话交接摘要 | 目标层 `handoff`，见[写回合同](#写入目标层) |
 | 多目标可复用思路 | `knowledge/cards/*.md` |
 | 知识晋升判断 | `knowledge/promotion-rules.md` |
 | Skill 执行顺序或判断方式问题 | `skills/*/SKILL.md` 或 `skills/runtime-protocol.md` |
@@ -31,91 +23,21 @@
 
 ## 自动证据读取
 
-复盘前先收集低风险证据，避免凭记忆总结：
+读取步骤与 `RETROSPECTIVE DECISION` 模板见
+[复盘命令](../../commands/retrospect.md#自动收集)及其[输出格式](../../commands/retrospect.md#输出格式)。
 
-```bash
-python3 tools/target_memory.py show TARGET --json
-python3 tools/checkpoint.py --target TARGET --json
-```
-
-Checkpoint 是只读快照，`target_write_back.lead/next/dead_end` 为空，handoff 仅展示，
-不是待执行 writer 或落盘真源。先参考其 `coverage`、`decision` 和 `retrospect`，
-再决定是否晋升知识库、Skills 或 Rules。只有视图缺字段时才展开对应 owner：
-
-```bash
-python3 tools/autopilot_state.py --target TARGET --json
-python3 tools/surface.py --target TARGET --json
-python3 tools/coverage_matrix.py find-gaps --target TARGET
-```
-
-分别用于 lane/route、逐 endpoint 表面和未处置覆盖格；不默认预拉全量状态或执行
-`coverage_matrix.py rebuild`。有界 `find-gaps` 不是全部覆盖，按需扩展。
-需要主张或条件化经验时读取同一 Store：
-
-```bash
-python3 tools/target_store.py findings --target TARGET
-python3 tools/target_store.py findings --target TARGET --id FINDING_ID
-python3 tools/experience_recall.py query --target TARGET --query '当前复盘问题' --json
-```
-
-`memory/goals/active.json` 仅用于选择目标。缺库/缺 Finding ID 必须显式失败，合法空库
-的列表可为空；旧 Finding、目标记忆和会话 JSON 只供显式历史检查，不作当前事实回退。
-按 selected Finding 查询返回的 assessment/evidence/delivery/report 关系展开；validation
-summary 使用该次 validate 返回并保留的 `summary_path`，核对 target/Finding 后读取。
-Store Finding 没有 summary 定位字段，不能从全局 `findings/last-validate.json` 绑定别的 Finding。
-
-不要默认读取大体积原始日志、完整响应包、HTML dump 或无关历史会话。
-
-## 复盘问题
-
-```text
-RETROSPECTIVE DECISION
-- Target:
-- Session goal:
-- Evidence reviewed:
-- Coverage state:
-  - covered:
-  - high-value gaps:
-  - red-line blocked:
-  - still unknown:
-- Target write-back:
-  - lead:
-  - next:
-  - dead-end:
-  - handoff:
-  - source checkpoint:
-- Knowledge promotions:
-  - candidate:
-  - target card:
-  - reason:
-  - proposed entry:
-- Skill changes:
-  - candidate:
-  - target skill:
-  - issue:
-  - proposed change:
-- Rule changes:
-  - candidate:
-  - target rule:
-  - reason:
-  - proposed change:
-- Remember:
-  - validated finding or success pattern:
-- Decision:
-  - safe auto-write:
-  - needs human review:
-```
+- Checkpoint 是只读快照；空的 `target_write_back` 列表和展示的 handoff 不是待执行写入。
+  复用有效视图，只展开缺失的 owner/原件，不默认预拉全部状态、日志、响应或历史。
+- 目标选择指针不代替 Store。缺库/缺 Finding ID 显式失败，合法空库可为空，旧 JSON 不作当前事实回退。
+- 按选定 Finding 的 assessment/evidence/delivery/report 关系展开；validation summary 核对
+  target/Finding，不能用全局 `findings/last-validate.json` 绑定另一发现。
+- 有界 `find-gaps` 不是全部覆盖；按需展开，不为复盘固定执行 rebuild。
 
 ## 判断标准
 
 ### 写入目标层
 
-满足以下任一条件：
-
-- 只对当前目标有意义
-- 还只是 Lead / Signal
-- 需要下次继续验证
-- 是当前目标的 dead end
+当前目标的 Lead/Signal、条件反证、下一步和交接写入目标层；是否保存仍按下述唯一时机。
 
 目标层写回时机唯一由
 [`skills/runtime-protocol.md#cognitive-write-timing`](../../skills/runtime-protocol.md#cognitive-write-timing)
@@ -123,91 +45,32 @@ RETROSPECTIVE DECISION
 需要续接时，保存必要增量及真实引用，不等用户另说“记住”。本规则只帮助分流内容，
 不新增逐观察复盘或固定写回频率；执行事实和真实回执仍即时交给原 owner。
 明确只读/预览时只展示建议，不写目标层或 campaign 工作文件。
-具体命令、条件/重开要求、凭据引用、交接与失败恢复统一见
+完整命令示例、条件/重开要求、凭据引用、交接与失败恢复统一见
 [`commands/target.md#交接与证据`](../../commands/target.md#交接与证据)。
 先按 Shared Memory Continuity 核对当前事实与相关反证，再决定本次需要保留的增量。
 
 ### 写入知识库
 
-满足以下任一条件：
-
-- 多个目标可复用
-- 能帮助 Skill 更好发散
-- 是常见高价值模式
-- 是常见低价值方向
-- 有明确触发信号、下一步和停止条件
-
-知识库默认只输出 patch 建议，不自动改文件。候选条目必须包含：
-
-```text
-Evidence pattern:
-Why it matters:
-Next action:
-Stop condition:
-Validation requirement:
-```
-
-知识库候选必须说明目标卡片，例如：
-
-```text
-knowledge/cards/api-idor.md
-knowledge/cards/auth-access.md
-knowledge/cards/ssrf-url-fetch.md
-knowledge/cards/graphql.md
-knowledge/cards/upload-parser.md
-knowledge/cards/race-conditions.md
-knowledge/cards/dead-ends.md
-knowledge/cards/coverage-prompts.md
-```
+多目标可复用的思路、高/低价值形态及其触发、验证和停止条件可形成候选；单站结论不当通用方法。
+原生方法维护遵守 `rules/hunt-iter.md` 的准入、来源和主控审核；共享知识卡按
+`knowledge/promotion-rules.md` 及现有发布审核处理，默认只输出候选，不自动发布。
+候选指明目标卡、证据形态、价值、下一动作、停止条件与验证要求；完整模板见复盘命令。
 
 ### 修改 Skill
 
-满足以下任一条件：
-
-- 当前流程顺序导致漏测
-- Skill 没有正确调用知识库
-- Skill 输出缺少 Evidence / Hypothesis / Next action
-- Skill 没有写回目标层
-- Skill 经常在某类任务上选错路径
-
-Skill 默认只输出建议，不自动改文件。建议必须说明：
-
-- target skill
-- 当前证据
-- 缺陷类型：route / ordering / output / write-back / context-load
-- proposed change
+选择/顺序导致漏测，或知识调用、输出、写回不完整时，指出 `target skill`、证据、
+缺陷类型（route / ordering / output / write-back / context-load）和 `proposed change`。
+默认只提建议，不自动修改。
 
 ### 修改 Rules
 
-满足以下任一条件：
-
-- 发现新的高风险边界
-- 覆盖基线缺少关键 surface
-- 上下文加载规则导致读太多或读太少
-- 验证/报告 gate 存在模糊或冲突
-
-Rules 默认只输出建议，不自动改文件。建议必须说明：
-
-- target rule
-- 触发证据
-- 为什么不是知识库或 Skill 问题
-- proposed change
+红线、覆盖、加载、验证或报告标准存在缺口/冲突时，指出 `target rule`、触发证据、
+为何属于规则问题及 `proposed change`。默认只提建议；用户明确授权的工程修复按授权执行。
 
 ### `/remember`
 
 只有已验证发现、稳定成功模式或经过 `/validate` 的结论进入 `/remember`。
 Lead、Signal、未验证假设、目标专属线索不进入 `/remember`。
-
-## 自动化边界
-
-| 动作 | 默认行为 |
-|---|---|
-| 写目标层 lead / next / dead-end / handoff / note | 按唯一 cognitive-write-timing 保存必要增量；只读/预览不写 |
-| 修改知识卡 | 只建议 patch，需人工确认 |
-| 修改 Skill | 只建议 patch，需人工确认 |
-| 修改 Rules | 只建议 patch，需人工确认 |
-| `/remember` | 仅验证后建议执行 |
-| 删除或覆盖已有经验 | 禁止自动执行 |
 
 ## 禁止事项
 
@@ -215,5 +78,6 @@ Lead、Signal、未验证假设、目标专属线索不进入 `/remember`。
 - 不把目标专属敏感信息写入知识库。
 - 不把真实凭证、cookie、token、个人数据或客户数据写入知识库。
 - 不用复盘替代 `/validate`。
+- 不自动删除或覆盖已有经验；修正通过原 owner 保留历史与依据。
 - 不用“这次没发现”结束复盘，必须说明覆盖和剩余项。
 - 不把目标层 dead end 直接晋升为全局规则，除非多个目标重复出现且有停止条件。

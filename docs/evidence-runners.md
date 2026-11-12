@@ -27,12 +27,30 @@ Store 和 Coverage 命令本来输出 JSON，**不加 `--json`**。
 
 ### 在执行时捕获原件
 
-用已有浏览器 HAR/export 或 curl trace 捕获实际请求；适当的 raw sender 用于字节敏感实验。
+浏览器 HAR/export 直接走[浏览器原件入口](#浏览器已捕获原件)；curl trace 或适当的 raw sender
+用于对应 HTTP/字节敏感实验。
 下例仅用于已核对 Scope/副作用的请求；原生 curl 不自动继承项目 Auth/父 Scope，
 不加自动跟随跳转。认证用受控私有配置/会话来源，不把令牌放 argv 或日志输出。
 父会话的可编排脚本将捕获和登记放在**同一次工具执行**中；多步脚本收集有序 `runs`，
-在 `finally` 提交本批。浏览器/MCP 工具返回后立即按对应合同导入并登记，下一调查前
-消费回执。子代理仍只交付原件/执行元数据，由父会话登记。
+在 `finally` 提交本批。原生浏览器/MCP 可在同一会话连续完成一个有界流程（如导航→填表→提交→读回），
+不要求每次点击或快照后中断登记，也不要求 MCP 与登记 CLI 合成一次工具调用。
+首次目标动作前将唯一 attempt、带时区的真实开始时间和捕获路径写入私有执行文件，登记复用；
+流程完成、失败或中断后先回收已有原件，
+导入并登记本批，下一独立实验、切换上下文或交接前消费回执。长流程分成可恢复的有界批次，
+不拖到整个调查结束才归档。只有文本请求列表或快照时保存发现及缺项，不补造严格登记所需时间/报文。
+子代理仍只交付原件/执行元数据，由父会话登记。
+需要 HAR 时，先核对宿主提供的非敏感捕获配置；Playwright 的
+`browser.contextOptions.recordHar`（`path`、`mode: "full"`、`content: "embed"`）在创建上下文时
+生效，已有上下文不能补录过去请求，不从内部 `_options` 猜配置。每个实际上下文使用独立路径；
+固定输出路径则关闭后先归档，再创建下一上下文。snapshot、console、state 按调查或恢复需要
+保存，不为单次观察凑齐材料或关闭仍需复用的上下文。仅在使用 `recordHar` 且到本任务上下文的
+关闭边界时，先保存所需材料，再关闭并核对 HAR 可解析后导入。原生导出和动态采集脚本直接
+写文件，不经模型复述正文；用户需保留窗口时使用原生详情导出或交接待落盘状态，不强关窗口。
+连续切换身份可保留同一 HAR，以逐请求 `source_index` 标注身份，按需保存能核对切换边界的
+快照/日志及恢复状态；不用为“每账号一份 HAR”重做流程或改写 HAR。累计 console 不得复制
+成多份独立身份原件。身份由该段会话及身份响应核对，Cookie 存在本身不证明账号或角色。
+逐请求时间取 HAR `startedDateTime` 等原字段，不能由快照、文件名或导入时间推算；未采集日志
+不等于零条，未捕获正文不等于空正文。缺项保持 partial/发现材料，不重新登录或重发来补登记。
 登记失败只处理登记：有 `registration_retry_command` 就按回执重试；输入被拒绝时修正已保存的
 登记输入/参数，单独调用 `record-observation` 或 `record-evidence`，不重跑包含捕获/发送的脚本。
 保留原 attempt、执行时间、原件和原 expected_operation；同次补证仍提交完整快照，详见下方 registration 合同。
@@ -214,6 +232,16 @@ python3 tools/validation_runner.py record-observation --repo-root ROOT --target 
   真实 `store_operation_id` / `observation_refs` 可由既有经验及 handoff owner 引用。
 
 ### 浏览器已捕获原件
+
+有原生 HAR 时先导入它，再将返回的 `summary_path` 作为 `CAPTURE_SUMMARY`：
+
+```bash
+python3 tools/browser_mcp_import.py --target TARGET --url PAGE_URL --har ORIGINAL_HAR --source playwright-mcp
+```
+
+`--snapshot`、`--console-json`、`--state` 仅在实际采集时提供。此路径不同时传发现用 `--network-json`：非空列表优先于
+HAR，可能缺严格登记所需报文和时间。多批可分别导入；使用 focused manifest 时提供各批原件
+路径，同 URL 的不同材料仍保留。无需逐条重写 HAR 为 `--evidence-json`；以下入口直接核验原件与缺项。
 
 ```bash
 python3 tools/validation_runner.py record-observation --repo-root ROOT --target TARGET \

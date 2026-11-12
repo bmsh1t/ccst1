@@ -282,7 +282,7 @@ When retiring a wrapper, migrate active callers, prompts, installers and artifac
 
 - `rules/ccst/hunting.md` — canonical hunt semantics + lane routing
 - `rules/ccst/tool-ai-boundary.md` — AI judges, tools preserve evidence
-- `commands/autopilot.md` — autonomous loop execution contract
+- `skills/autopilot-protocol.md` — autonomous loop execution contract
 
 ## Execution Contract Lookup
 
@@ -290,7 +290,7 @@ Read only the owner needed for a selected action, not this entire table as a che
 
 | Question | Owner |
 |---|---|
-| Automatic continuation, checkpoint cadence and stopping? | `commands/autopilot.md#shared-automation`; capped or inherited Round mechanics in `commands/autopilot-round.md` |
+| Automatic continuation, checkpoint cadence and stopping? | `skills/autopilot-protocol.md#shared-automation`; capped or inherited Round mechanics in `skills/autopilot-round-protocol.md` |
 | Which hypothesis to continue, rotate or stop? | `skills/src-hunter/SKILL.md` |
 | Context and complete method reading? | `skills/runtime-protocol.md#shared-knowledge-recall` |
 | Recover current target facts or recall a prior problem? | `skills/runtime-protocol.md#shared-memory-continuity`, `skills/runtime-protocol.md#problem-recall` |

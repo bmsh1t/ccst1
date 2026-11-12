@@ -1,7 +1,7 @@
 # 6k 支持工具的 CCST 接线
 
-原包功能源码保留在项目内，启用使用当前宿主的 MCP 配置。迁入没有启动服务、
-安装依赖或改个人配置；已有会话里的工具以实际可调用结果为准。
+浏览器使用宿主配置的官方 MCP；项目保留 FOFA 支持源码。仓库变更不启动服务、
+安装依赖或修改个人配置，工具可用性以当前会话实际调用为准。
 
 ## FOFA
 
@@ -10,24 +10,22 @@
 已有 `mcp/fofamap-client` 继续指向其外部实现；不用同时启用两个入口重复查询。
 查询结果仍需按 CCST 的目标与证据接口保存。
 
-## Playwright 双槽
+## 浏览器 MCP
 
-需要两个独立会话时可将 MCP 宿主的 stdio 命令设为：
+宿主直接配置官方 Playwright MCP / Chrome DevTools MCP；agent 按
+[浏览器规则](../rules/playwright-browser-mcp.md)调用。隔离上下文、独立 Profile 或已有
+浏览器连接使用官方 MCP 的配置能力，按需选择；项目不再分配固定端口或管理浏览器进程锁。
 
-```text
-node /absolute/path/to/ccst/bin/playwright-dual-slot.mjs
-```
+Linux root 启动 Chromium 报 `Running as root without --no-sandbox` 时，优先使用支持沙箱的
+非 root 宿主；必须保留 root 的隔离环境可为 Playwright MCP 启动参数增加 `--no-sandbox`
+（等价 `browser.launchOptions.chromiumSandbox=false`）。这会关闭 Chromium 自身沙箱，
+不作为所有环境的默认值。参数变更后重新加载对应 MCP 服务；仅改配置文件不改变已运行连接。
+以真实导航成功验证启动，不以进程存在或工具已列出作为可用证明。
 
-启动器沿用 9222/9223 两个 CDP 端口、每槽独立 profile 与进程锁，stderr 输出诊断，
-stdio 交给 Playwright MCP。Chrome/Edge 不在常见路径时设置 `CHROME_PATH`。
-异常退出留下的锁需确认对应会话已停止后手动清理；启动器会提示锁目录，避免并发时误删另一会话正在创建的锁。
-这两个端口应交由此启动器管理；它会复用端口上已有的 CDP 浏览器，不会退出时关闭浏览器。
+旧配置迁移：若宿主启动命令仍指向已退役的 `bin/playwright-dual-slot.mjs`，需改为官方 MCP
+入口后再启动该服务。删除仓库脚本不会修改宿主配置，也不会关闭原浏览器。原会话的
+`mcp-shared-browsers` Profile 与锁不自动清理；仅确认所属会话停止后处理遗留锁，保留用户数据。
 
-可用 `PLAYWRIGHT_MCP_CLI` 指向已经安装的 Playwright MCP JavaScript CLI。
-未设置时沿用原包的 `npx -y @playwright/mcp@latest`；首次启动可能下载依赖，
-需要固定版本的环境可显式指定已安装 CLI。启动器不修改 npm 缓存，也不依赖某台机器的缓存路径。
-
-Linux 需要可运行的图形浏览器环境。普通单会话继续使用当前宿主已有浏览器 MCP。
 浏览器导出通过现有 `browser_mcp_import.py` 与 `record-observation` 登记，
 详见 [证据接口](evidence-runners.md#native-observation-registration)。
 

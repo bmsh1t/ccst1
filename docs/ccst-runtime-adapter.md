@@ -15,11 +15,14 @@ CCST 路径与操作。本文件导航现有合同并记录来源；根 AGENTS.m
 
 显式 `/autopilot` 调用中，6k 提供范围语义、调查方法与证据判断；
 启动、后台等待、继续和退出按
-[Shared Automation](../commands/autopilot.md#shared-automation) 执行。
+[Shared Automation](../skills/autopilot-protocol.md#shared-automation) 执行。
 
 Claude 宿主入口并行送达完整 `src-hunter` 正文和共享运行协议，Bootstrap 单独完成
 Scope/Auth、安装一致性和目标状态准入。正文分块带来源指纹、原包路径和结束标记，
 避免宿主预览截断与末尾空白丢失；收到正文不等于获准执行。
+两个命令只保留入口与导航；`skills/autopilot-protocol.md` 和
+`skills/autopilot-round-protocol.md` 保存完整自动化正文，由同一分片传输送达一次。
+普通模式按需读取已有 Round 工作的协议；Round 入口直接送达两份协议。
 `body` 直接读取当前项目完整正文，不访问 Hook、会话或 runtime。宿主只保留
 本次会话/调用/目标绑定，不保存正文快照；历史源码由 Git 保存。超限 Bootstrap
 通过私有文件完整交付，该副本不作为目标事实或恢复缓存。目标列表先走已有批次选择，再绑定具体目标。
@@ -60,7 +63,7 @@ Recon/Scan 运行中可并行独立且有依据的调查；锁只防同阶段重
 
 - 浏览器按 [浏览器规则](../rules/playwright-browser-mcp.md) 使用会话可见 Playwright/Chrome
   DevTools MCP；FOFA 用可用的 FOFA/FofaMap MCP。工具名/参数以当前 schema 为准。
-  三账号支持在 `mcp-servers/fofa_MCP/`，双槽启动器在 `bin/`，配置见
+  浏览器直接使用官方 MCP 入口；FOFA 三账号支持在 `mcp-servers/fofa_MCP/`，说明见
   [native-tools](native-tools.md)；资产存在不证明 MCP 已启用，也不授权修改个人配置。
 - 代理按 [resin-proxy](resin-proxy.md) 当前配置，Git remote 取当前仓库。
   push、安装和个人配置变更均非规则隐含动作。

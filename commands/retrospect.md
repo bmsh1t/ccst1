@@ -13,7 +13,6 @@ description: 复盘本轮 hunt / validation / target session，并把经验分�
 
 ```text
 rules/ccst/retrospective.md
-memory/goals/active.json
 rules/ccst/coverage-gate.md
 knowledge/promotion-rules.md
 ```
@@ -38,19 +37,16 @@ knowledge/index.md
 先解析目标。优先使用 `$ARGUMENTS`；没有参数时读取仅负责目标选择的 `memory/goals/active.json`。
 仍然没有目标时，停止并要求用户指定目标。
 
-有目标后按缺口消费，不预拉全量状态：
+复用本会话仍有效的目标记忆和 Checkpoint；仅缺失或相关 owner 变化时查询对应视图：
 
 ```bash
 python3 tools/target_memory.py show TARGET --json
 python3 tools/checkpoint.py --target TARGET --json
 ```
 
-`checkpoint.py` 是只读快照，不是写回 owner。写回时机唯一见
+`checkpoint.py` 是只读快照；空的 `target_write_back` 和展示的 handoff 不是写入建议。写回时机见
 [`skills/runtime-protocol.md#cognitive-write-timing`](../skills/runtime-protocol.md#cognitive-write-timing)。
-其输出携带 coverage、decision、surface 摘要和 retrospect 建议；
-`target_write_back.lead/next/dead_end` 保持空，handoff 仅展示当前交接，不能反推落盘。
-先消费这两个视图；只有 checkpoint 输出确实
-缺字段时，才按需补读对应 owner：
+现有视图缺少决策依据时，只展开相应 owner：
 
 ```bash
 python3 tools/autopilot_state.py --target TARGET --json    # 需要 lane/route 状态时
@@ -59,11 +55,7 @@ python3 tools/coverage_matrix.py find-gaps --target TARGET # 需要未处置覆�
 ```
 
 `find-gaps` 不做语义过滤；按需提高 `--limit` 或读取完整矩阵，不把有界预览当作全部覆盖。
-`coverage_matrix.py rebuild` 仅在矩阵过期且复盘要写回时执行。
-
-复盘时优先使用 checkpoint 输出的 `target_write_back`、`coverage`、`decision`
-和 `retrospect` 字段，再判断哪些经验需要晋升到知识库（走 `/distill`）、
-Skills 或 Rules。
+本次判断需要最新覆盖矩阵且缓存过期时才显式运行 `coverage_matrix.py rebuild`；记忆写回本身不触发重建。
 
 需要展开主张或条件化经验时读取同一 Store：
 
@@ -132,7 +124,7 @@ RETROSPECTIVE DECISION
 按唯一写回时机协议保存影响后续判断的必要增量，不等用户再次说“记住”；
 无增量不重复写，明确只读/预览时不写目标层或 campaign 工作文件。
 
-exact command 使用 `rules/ccst/retrospective.md#写入目标层` 的完整示例，显式绑定 TARGET。
+具体命令见 `commands/target.md#交接与证据`，显式绑定 TARGET。
 negative 必须有适用条件、重开条件和同 Store 已登记的 `OPERATION_ID:STEP`（从零开始）；
 KILL 或低价值方向不自动证明 negative。缺登记证据时仅明确建议未验证 note 或保留假设。
 `next`/`handoff` 只是 advisory intent，不创建或完成 Queue Action。

@@ -59,7 +59,10 @@ def _string_values(value):
 def _referenced_paths(repo_root: Path, target: str, candidates: list[Path]) -> set[Path]:
     """Find explicit raw path references without scanning the raw corpus itself."""
     relative_tokens = {
-        path: path.relative_to(repo_root).as_posix().encode("utf-8")
+        path: [
+            alias.relative_to(repo_root).as_posix().encode("utf-8")
+            for alias in ((path, path.with_suffix("")) if path.suffix == ".gz" else (path,))
+        ]
         for path in candidates
     }
     referenced: set[Path] = set()
@@ -96,13 +99,14 @@ def _referenced_paths(repo_root: Path, target: str, candidates: list[Path]) -> s
                     raise RuntimeError(f"invalid UTF-8 reference source {source}") from exc
                 except json.JSONDecodeError as exc:
                     raise RuntimeError(f"invalid JSON reference source {source}: {exc.msg}") from exc
-            for path, token in relative_tokens.items():
+            for path, tokens in relative_tokens.items():
                 if structured_values is not None and any(
                     token.decode("utf-8") in value
+                    for token in tokens
                     for value in _string_values(structured_values)
                 ):
                     referenced.add(path)
-                elif token in payload:
+                elif any(token in payload for token in tokens):
                     referenced.add(path)
     return referenced
 

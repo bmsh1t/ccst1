@@ -48,7 +48,8 @@
 
 最小恢复用 `python3 tools/target_memory.py show TARGET`，整体工作/覆盖用 `python3 tools/resume.py --target TARGET`。
 Autopilot 的 `state.target_memory` / `recovery.state.target_memory` 是同一 owner 的绑定视图，有效时直接用；历史按 `experience_window` 或返回的 ID/命令展开。
-换目标、上下文丢失或 owner 更新后重新恢复；文件名搜索/直接 SQL 不代替含纠错、条件和来源健康的 owner 视图。无关解释不查目标。
+换目标、上下文丢失或相关 owner 变化使工作集失效时刷新；自身记忆写回按 `commands/target.md#交接与证据` 确认，不触发全量恢复。
+文件名搜索/直接 SQL 不代替含纠错、条件和来源健康的 owner 视图；无关解释不查目标。
 写回显式 `--target TARGET`；active pointer 只选择已初始化目标。缺库、legacy、damaged、fenced 按显式初始化/恢复处理，不猜空状态。
 `current_handoff` 独立于历史窗口；`next_actions` 只取最新交接的显式 `next_intent`，不是 Queue。
 用前对照当前 Action、conditions、review_state、source_health 和纠错；旧意图不重执行已完成工作。
@@ -70,7 +71,7 @@ disputed/superseded/needs_review 先核对当前证据，不阻止独立调查�
 |---|---|
 | 执行返回/中断 | 即时保存 raw、operation/observation、真实回执；按 owner 完成 Candidate 登记、终态心跳及未知效果回收 |
 | 稳定结论、反证、条件变化、证伪、转向/阻塞 | 保存影响后续判断的增量、证据及适用/重开条件；无增量不重复记 |
-| 暂停、换目标、compaction、结束 | 保存未落盘判断和明确下一意图；需要续接时写结构化 handoff，完成判断仍归 Coverage/Closure |
+| 暂停、换目标、compaction、结束 | 仅保存未落盘判断和下一意图；需续接时写结构化 handoff，已保存且无增量则复用；完成判断仍归 Coverage/Closure |
 
 内容、凭据引用、参数和重试按 `commands/target.md#交接与证据`，区分观察、假设、结论；子代理增量由主会话接受后写入。
 读 Skill、模式/轮次变化、工具次数和 Checkpoint 不触发额外整理；Checkpoint 只读，不逐观察另写 note/classify/fusion/业务模型。
@@ -127,12 +128,20 @@ completed/cancelled 不改写；同一执行意图确需重试时另建 `repeat_
 登录→token→行动、泄露→使用、多轮 oracle 或连接绑定协议，依赖步骤保持同一进程/socket/浏览器上下文。
 必须切换时显式导出/恢复完整状态，不假设 Cookie、nonce、token 或 oracle 轮次跨调用保留。
 
+### Browser Observation
+
+选问题时按 `rules/playwright-browser-mcp.md#1-何时使用` 判断是否缺少业务页面、交互或新身份状态的证据。
+只有 URL/扫描摘要且业务面未明时主动建立浏览器基线；具体选择与复用按该规则，不等待已知漏洞信号。
+纯 API/源码问题不强制浏览器。浏览器不可用时记录实际失败及未观察的流程，独立工作继续；静态替代不关闭该缺口。
+同一有界流程可连续调用原生 MCP；捕获和登记的时机统一按 `docs/evidence-runners.md#在执行时捕获原件`。
+
 ## 输出契约
 
 首次用方法或转向前，用 1–2 句说明问题、已完整读取的方法/模块文件及关键对照。
 重要结果、阻塞或长时间执行/等待时说明实测、待验证解释和下一步；工具 description 不代替进展。
 使用实际证据和 owner 回执，不逐动作抄表或编造执行；未知效果待回收，专家自报不确认 Finding/完成 Action。
-结束摘要按入口给一次，不以中途总结代替恢复或执行记录。
+当前任务要求、必要写回/cleanup 和入口结束条件均已满足时，直接给一次最终答复。
+无新证据、冲突或明确交付要求时，不为收尾重复回读/核验原件或补建索引、清单、报告；中途总结不代替执行记录。
 
 ## 禁止事项
 

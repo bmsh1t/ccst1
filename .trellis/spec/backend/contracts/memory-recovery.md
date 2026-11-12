@@ -128,14 +128,12 @@ no schema, automatic memory writes or execution authority.
   no next action; it never revives older intent. The text save receipt shows the trimmed
   value accepted by Store, or `(none)` for an empty intent.
   All experience/handoff text fields use role labels and private credential references,
-  never secret values. Evidence links identify the actual supporting observation steps;
-  one `:0` cannot stand for a batch. Before saving, expand selected operations through
-  the existing ID view and compare actual request/response facts and necessary
-  controls. Copy full receipt refs into `--operation-ref`; when only an expanded
-  record is available, combine operation_id and step from that same observation,
-  without duplicating IDs in prose/next intent; read back the saved handoff with show.
-  These are authoring duties in commands/target,
-  not a claim that Store validates prose or automatically redacts credentials.
+  never secret values. Evidence links identify actual observation steps; one `:0` cannot
+  stand for a batch. Authoring follows `commands/target.md#交接与证据`: review raw facts
+  and controls, reuse unchanged reviewed material, then confirm the saved handoff once.
+  Missing, changed or conflicting facts require fresh reads. Write-back alone does not
+  trigger full recovery or derivative artifacts. Store checks bindings and integrity,
+  not prose correctness or automatic credential redaction; Autopilot stop checks remain separate.
 - Each knowledge snapshot acquires/parses once. The final byte fence includes registry,
   cards, publication receipts, reviews and blind-answer artifacts, including missing
   paths observed during reads. A changed/missing/appearing dependency rejects the

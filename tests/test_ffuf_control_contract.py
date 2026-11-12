@@ -1,6 +1,7 @@
 """FFUF wordlist transport and control failures across the real shell/adapter seam."""
 
 import gzip
+import base64
 import json
 import os
 import re
@@ -37,6 +38,32 @@ def _env(root):
         "HOME": str(root), "XDG_CONFIG_HOME": str(root / "config"),
         "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
     }
+
+
+@pytest.mark.parametrize("fault", ["", "duplicate", "missing", "mismatch", "base64", "boolean"])
+def test_word_page_receipts_bind_every_position_and_input(tmp_path, fault):
+    words = tmp_path / "words.txt"
+    words.write_bytes(b"one\r\n\n#comment\none\nlast")
+    rows = [dict(_row(URL + f"/{position}"), position=position,
+                 input={"FUZZ": base64.b64encode(word).decode()})
+            for position, word in enumerate([b"one", b"", b"#comment", b"one", b"last"], 1)]
+    if fault == "duplicate":
+        rows[-1] = rows[0]
+    elif fault == "missing":
+        rows.pop()
+    elif fault == "mismatch":
+        rows[0]["input"]["FUZZ"] = base64.b64encode(b"other").decode()
+    elif fault == "base64":
+        rows[0]["input"]["FUZZ"] = "!invalid"
+    elif fault == "boolean":
+        rows[0]["position"] = True
+    result = tmp_path / "result.jsonl"
+    result.write_text(_jsonl(list(reversed(rows))))
+    if fault:
+        with pytest.raises(ValueError):
+            ReconAdapter(tmp_path).check_ffuf_run(result, words)
+    else:
+        ReconAdapter(tmp_path).check_ffuf_run(result, words)
 
 
 @pytest.mark.parametrize("kind", ["missing", "empty", "json", "record", "one", "three",
@@ -101,14 +128,18 @@ def _runtime(root):
         )
 
 
-def _shell(root, names, body, ffuf_path, variables=None):
+def _functions(names):
     source = (REPO / "tools/recon_engine.sh").read_text()
-    starts = list(re.finditer(r"(?m)^(\w+)\(\) \{", source))
-    functions = {match[1]: source[match.start():starts[index + 1].start()]
-                 for index, match in enumerate(starts[:-1])}
+    functions = {match[1]: match[0] for match in re.finditer(
+        r"(?ms)^(\w+)\(\) \{.*?^\}", source
+    )}
+    return "\n".join(functions[name] for name in names)
+
+
+def _shell(root, names, body, ffuf_path, variables=None, expected=0):
     assert os.pathsep not in str(ffuf_path.parent), "PATH entries cannot contain colons"
-    script = 'set -eu\ntest "$(command -v ffuf)" = ' + shlex.quote(str(ffuf_path)) + "\n"
-    script += "\n".join(functions[name] for name in names)
+    script = 'set -euo pipefail\ntest "$(command -v ffuf)" = ' + shlex.quote(str(ffuf_path)) + "\n"
+    script += _functions(names)
     script += '\nbb_auth_args_for_url() { BB_URL_AUTH_ARGS=(); }\n'
     variables = {"BASE_DIR": root, "RECON_DIR": root / "recon",
                  "FFUF_PHASE_DEADLINE_SECONDS": 20, **(variables or {})}
@@ -119,13 +150,16 @@ def _shell(root, names, body, ffuf_path, variables=None):
         ["bash", "--noprofile", "--norc", "-c", script + "\n" + body],
         cwd=root, env=env, capture_output=True, text=True, timeout=25,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == expected, result.stdout + result.stderr
 
 
-WORKER_FUNCTIONS = ("timeout_bin", "run_with_timeout", "dir_fuzz_remaining_seconds", "ffuf_run_target")
+WORKER_FUNCTIONS = ("timeout_bin", "run_with_timeout", "dir_fuzz_remaining_seconds",
+                    "stop_ffuf_request", "ffuf_run_target")
 
 
-@pytest.mark.parametrize("mode", ["empty", "malformed", "nonzero", "zero", "size", "main_failed"])
+@pytest.mark.parametrize("mode", ["empty", "malformed", "nonzero", "zero", "size", "main_failed",
+                                 "control_429", "control_503", "main_429", "main_503",
+                                 "gzip_failed"])
 def test_phase_preserves_results_and_only_rotates_complete_hosts(tmp_path, mode):
     root = tmp_path / "ancestor:one with spaces"
     _runtime(root)
@@ -137,11 +171,12 @@ def test_phase_preserves_results_and_only_rotates_complete_hosts(tmp_path, mode)
     (root / "wordlists/common.txt").write_text("found\nabsent\n")
     fake = tmp_path / "bin/ffuf"
     fake.write_text(
-        f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+        f"#!{sys.executable}\nimport base64, json, sys\nfrom pathlib import Path\n"
         f"mode = {mode!r}\nroot = Path({str(root)!r})\n"
-        "args = sys.argv[1:]\nmain = '-ac' in args\n"
+        "args = sys.argv[1:]\n"
         "wordarg = args[args.index('-w') + 1]\n"
         "words = (sys.stdin.read() if wordarg == '-' else Path(wordarg).read_text()).splitlines()\n"
+        "main = words == ['found', 'absent']\n"
         "with (root / 'calls.jsonl').open('a') as out:\n"
         "    print(json.dumps({'args': args, 'words': words}), file=out)\n"
         "if not main and mode in {'empty', 'nonzero'}:\n"
@@ -149,42 +184,74 @@ def test_phase_preserves_results_and_only_rotates_complete_hosts(tmp_path, mode)
         "if not main and mode == 'malformed':\n"
         "    print('{broken'); raise SystemExit(0)\n"
         "url = args[args.index('-u') + 1]\n"
-        "for word in (words[:1] if main else words):\n"
-        "    print(json.dumps({'url': url.replace('FUZZ', word), 'status': 200 if main or mode == 'size' else 404,\n"
-        "                      'length': 20 if main else 4, 'words': 1, 'lines': 1}))\n"
+        "for position, word in enumerate(words, 1):\n"
+        "    status = 200 if main or mode in {'size', 'main_429', 'main_503'} else 404\n"
+        "    if mode.startswith('control_') and not main or mode.startswith('main_') and main and word == 'absent' and mode != 'main_failed':\n"
+        "        status = int(mode.rsplit('_', 1)[1])\n"
+        "    print(json.dumps({'url': url.replace('FUZZ', word), 'status': status,\n"
+        "                      'length': 4, 'words': 1, 'lines': 1, 'position': position,\n"
+        "                      'input': {'FUZZ': base64.b64encode(word.encode()).decode()}}))\n"
         "raise SystemExit(1 if main and mode == 'main_failed' else 0)\n"
     )
     fake.chmod(0o700)
+    if mode == "gzip_failed":
+        compressor = tmp_path / "bin/gzip"
+        compressor.write_text(
+            "#!/bin/sh\n"
+            'if [ "$2" != /dev/null ]; then echo "compression interrupted" >&2; exit 1; fi\n'
+            f"exec {shlex.quote(shutil.which('gzip'))} \"$@\"\n"
+        )
+        compressor.chmod(0o700)
     variables = {
         "TARGET": TARGET, "RECON_TARGET_KEY": TARGET, "WORDLIST_DIR": root / "wordlists",
         "LEGACY_WORDLIST_DIR": root / "unused", "QUICK_MODE": "--quick", "THREADS": 2,
-        "FFUF_HOST_CONCURRENCY": 2, "FFUF_TARGET_ALIAS_MAP": "",
+        "FFUF_HOST_CONCURRENCY": 2,
         "FFUF_PHASE_ARTIFACT": "", "FFUF_LOG": root / "recon/logs/ffuf.log",
+        "RATE_LIMIT": 10, "FFUF_EFFECTIVE_BUDGET_SECONDS": 20,
+        "DIR_FUZZ_HARD_BUDGET_SECONDS": 20, "FFUF_WORK_DIR": "",
+        "FFUF_STATUS_COUNTS": "{}", "FFUF_HEAVY_SIGNATURES": "-",
+        **{name: 0 for name in ("FFUF_ATTEMPTED", "FFUF_SUCCEEDED", "FFUF_FAILED",
+                                "FFUF_CONTROL_FAILED", "FFUF_INTERRUPTED", "FFUF_OBSERVATIONS",
+                                "FFUF_PARSE_ERRORS", "FFUF_SAMPLE_COUNT", "FFUF_OVERFLOW")},
         **{name: dirs / filename for name, filename in (
             ("FFUF_TARGET_STATE", "ffuf_target_state.json"), ("FFUF_TARGET_PLAN", "ffuf_target_plan.json"),
-            ("FFUF_TARGETS_FILE", "ffuf_targets.txt"), ("FFUF_PHASE_STATE", "ffuf_phase_state.json"))},
+            ("FFUF_TARGETS_FILE", "ffuf_targets.txt"))},
     }
-    _shell(root, (*WORKER_FUNCTIONS, "url_append_base", "filter_ffuf_targets",
-                  "write_ffuf_phase_state", "cleanup_ffuf_background", "run_ffuf_phase"),
-           "run_ffuf_phase", fake, variables)
-    control_failed = mode in {"empty", "malformed", "nonzero"}
-    main_failed = mode == "main_failed"
+    _shell(root, (*WORKER_FUNCTIONS, "url_append_base", "archive_collector_artifact",
+                  "run_ffuf_phase"),
+           """FFUF_WORKER_PIDS=()
+log_done() { :; }
+log_warn() { :; }
+emit_claude_hint() { :; }
+record_recon_phase() { printf '%s' "$2" > "$RECON_DIR/phase-status"; }
+run_ffuf_phase""", fake, variables, expected=1 if mode == "gzip_failed" else 0)
+    if mode == "gzip_failed":
+        assert not (root / "recorded.tsv").exists()
+        assert not (dirs / "ffuf_summary.json").exists()
+        assert json.loads((dirs / "ffuf_target_state.json").read_text())["completed"] == {}
+        assert len(list(dirs.glob(".ffuf-workers.*/target-*/main.jsonl"))) == 2
+        return
+    control_failed = mode in {"empty", "malformed", "nonzero", "control_429", "control_503"}
+    main_failed = mode in {"main_failed", "main_429", "main_503"}
     complete = not control_failed and not main_failed
-    phase = json.loads((dirs / "ffuf_phase_state.json").read_text())
     summary = json.loads((dirs / "ffuf_summary.json").read_text())
-    assert phase["status"] == ("ok" if complete else "partial")
-    assert len(summary["controls"]) == (0 if control_failed else 4)
+    assert (root / "recon/phase-status").read_text() == ("ok" if complete else "partial")
+    assert len(summary["controls"]) == (0 if mode in {"empty", "malformed", "nonzero"} else 4)
     assert (summary["parse_error_count"] > 0) == (mode == "malformed")
-    for payload in (phase, summary):
-        assert payload["attempted"] == 2
-        assert payload["succeeded"] == (0 if main_failed else 2)
-        assert payload["failed"] == (2 if main_failed else 0)
-        assert payload["control_failed"] == (2 if control_failed else 0)
-        assert payload["observations"] == 2
+    assert summary["attempted"] == 2
+    assert summary["succeeded"] == (0 if main_failed else 2)
+    assert summary["failed"] == (2 if main_failed else 0)
+    assert summary["control_failed"] == (2 if control_failed else 0)
+    assert summary["observations"] == 4
     with gzip.open(dirs / "ffuf_results.jsonl.gz", "rt") as stream:
-        assert {json.loads(line)["url"] for line in stream} == {url + "/found" for url in urls}
+        assert {json.loads(line)["url"] for line in stream} == {
+            url + "/" + word for url in urls for word in ("found", "absent")
+        }
     host_status = "ok" if complete else ("failed" if main_failed else "partial")
-    assert set((root / "recorded.tsv").read_text().splitlines()) == {f"{url}\t{host_status}" for url in urls}
+    if mode == "malformed":
+        assert not (root / "recorded.tsv").exists()
+    else:
+        assert set((root / "recorded.tsv").read_text().splitlines()) == {f"{url}\t{host_status}" for url in urls}
     completed = json.loads((dirs / "ffuf_target_state.json").read_text())["completed"]
     assert set(completed) == (set(urls) if complete else set())
     retry = select_targets(target=TARGET, repo_root=root, httpx_path=root / "recon/live/httpx_full.txt",
@@ -198,9 +265,9 @@ def test_phase_preserves_results_and_only_rotates_complete_hosts(tmp_path, mode)
         args = call["args"]
         assert args[args.index("-w") + 1] == "-"
         assert len(call["words"]) == 2
-        if "-ac" in args:
-            assert call["words"] == ["found", "absent"]
-            assert ("-fs" in args) == (mode == "size")
+        assert "-ac" not in args and "-fs" not in args
+        assert "-noninteractive" in args
+        assert args[args.index("-mc") + 1] == "all"
     if mode in {"empty", "malformed"}:
         log = (root / "recon/logs/ffuf.log").read_text()
         assert "random-miss controls invalid:" in log and "expected exactly 2" in log
@@ -225,27 +292,35 @@ def test_missing_main_wordlist_is_a_visible_failure(tmp_path):
     fake.write_text(f"#!/bin/sh\ncat {shlex.quote(str(controls))}\n")
     fake.chmod(0o700)
     _shell(tmp_path, WORKER_FUNCTIONS,
-           'ffuf_run_target "$URL" "$WORKER" "$MISSING" 1', fake,
+           'ffuf_run_target "$URL" "$WORKER" "$MISSING" 1 10', fake,
            {"URL": URL, "WORKER": worker, "MISSING": tmp_path / "missing.txt"})
     assert (worker / "summary.tsv").read_text().split("\t")[1:] == ["failed", "1", "0", "1", "0", "0\n"]
     assert (worker / "main.jsonl").read_text() == ""
     assert "missing.txt" in (worker / "worker.log").read_text()
 
 
-@pytest.mark.parametrize("folder", ["127.0.0.1:3001", "[::1]:3001", "ancestor:one with spaces/host:two"])
-def test_real_ffuf_consumes_both_wordlists_through_background_stdin(tmp_path, folder):
+@pytest.mark.parametrize(("folder", "failure"), [
+    ("127.0.0.1:3001", ""), ("[::1]:3001", ""),
+    ("ancestor:one with spaces/host:two", ""),
+    ("partial-disconnect", "partial"), ("all-disconnect", "all"),
+])
+def test_real_ffuf_consumes_both_wordlists_through_background_stdin(tmp_path, folder, failure):
     executable = shutil.which("ffuf")
     assert executable, "real ffuf is required for the wordlist transport check"
     root = tmp_path / folder
     _runtime(root)
     (root / "recon").mkdir()
     worker = root / "worker"; worker.mkdir()
-    words = root / "words.txt"; words.write_text("found\nabsent\n")
+    words = root / "words.txt"; words.write_text("found\nabsent")
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             requests.append(self.path)
+            if (failure == "all" and not self.path.startswith("/__bbhunt_missing_")
+                    or failure == "partial" and self.path == "/absent"):
+                self.close_connection = True
+                return
             body = b"distinct found response" if self.path == "/found" else b"miss"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
@@ -260,13 +335,18 @@ def test_real_ffuf_consumes_both_wordlists_through_background_stdin(tmp_path, fo
     base = f"http://127.0.0.1:{server.server_port}"
     try:
         _shell(root, WORKER_FUNCTIONS,
-               f"( ffuf_run_target {shlex.quote(base)} {shlex.quote(str(worker))} {shlex.quote(str(words))} 1 ) &\nwait $!",
+               f"( ffuf_run_target {shlex.quote(base)} {shlex.quote(str(worker))} {shlex.quote(str(words))} 1 10 ) &\nwait $!",
                Path(executable))
     finally:
         server.shutdown(); server.server_close(); thread.join()
     controls = [json.loads(line) for line in (worker / "control.jsonl").read_text().splitlines()]
     results = [json.loads(line) for line in (worker / "main.jsonl").read_text().splitlines()]
     assert len(controls) == 2 and all("/__bbhunt_missing_" in row["url"] for row in controls)
-    assert [row["url"] for row in results] == [base + "/found"]
+    expected = set() if failure == "all" else {base + "/found"}
+    if not failure:
+        expected.add(base + "/absent")
+    assert {row["url"] for row in results} == expected
     assert "/found" in requests and "/absent" in requests and "/FUZZ" not in requests
-    assert (worker / "summary.tsv").read_text().split("\t")[1:] == ["ok", "1", "1", "0", "0", "0\n"]
+    assert (worker / "summary.tsv").read_text().split("\t")[1:] == (
+        ["failed", "1", "0", "1", "0", "0\n"] if failure else ["ok", "1", "1", "0", "0", "0\n"]
+    )

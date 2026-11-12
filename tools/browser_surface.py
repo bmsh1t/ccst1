@@ -19,7 +19,7 @@ RAW_REQUEST_RE = re.compile(
     (?:\d+\.\s*)?
     (?:\[(?P<method>GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\]\s*)?
     (?P<url>https?://[^\s]+|/[^\s]+)
-    (?:\s*=>.*)?
+    (?:\s*=>\s*(?:\[(?P<status>\d{3})\])?.*)?
     \s*$
     """,
     re.I | re.X,
@@ -60,29 +60,36 @@ def _load_json(path: Path | None) -> object:
         return []
 
 
-def _request_items(payload: object, *, _allow_data_envelope: bool = True) -> list[object]:
+def browser_export_items(payload: object, *, _allow_envelope: bool = True) -> tuple[list[object], bool]:
+    """Return discovery items and failure of their selected export envelope."""
     if isinstance(payload, list):
-        return payload
+        return payload, False
     if not isinstance(payload, dict):
-        return []
-    for key in ("requests", "items", "entries", "messages"):
+        return [], False
+    failed = payload.get("success") is False or payload.get("isError") is True or str(
+        payload.get("status") or ""
+    ).strip().lower() in {"error", "failed", "failure", "timeout", "stale"}
+    for key in ("requests", "networkRequests", "consoleMessages", "items", "entries", "messages", "network", "data"):
         value = payload.get(key)
         if isinstance(value, list):
-            return value
+            return value, failed
+    if isinstance(payload.get("networkRequest"), dict):
+        return [payload["networkRequest"]], failed
     log = payload.get("log")
     if isinstance(log, dict) and isinstance(log.get("entries"), list):
-        return log["entries"]
-    # MCP 包装层仅解一层 data，避免递归误读请求 body。
-    data = payload.get("data")
-    if _allow_data_envelope and isinstance(data, dict):
-        nested = _request_items(data, _allow_data_envelope=False)
-        if nested:
-            return nested
+        return log["entries"], failed
+    # Select one envelope, including an empty one; never descend into request bodies.
+    if _allow_envelope:
+        for key in ("structuredContent", "data"):
+            data = payload.get(key)
+            if isinstance(data, dict):
+                items, nested_failed = browser_export_items(data, _allow_envelope=False)
+                return items, failed or nested_failed
     for key in ("raw", "result"):
         value = payload.get(key)
         if isinstance(value, str):
-            return _raw_request_items(value)
-    return []
+            return _raw_request_items(value), failed
+    return [], failed
 
 
 def _first_string(*values: object) -> str:
@@ -92,47 +99,70 @@ def _first_string(*values: object) -> str:
     return ""
 
 
-def _body_from_request(item: dict, request: dict) -> object:
+def _body_from_request(item: dict, request: dict) -> tuple[object, str]:
+    content_type = _first_string(item.get("content_type_hint"), request.get("content_type_hint"))
+    if not content_type:
+        headers = item.get("requestHeaders", request.get("headers", item.get("headers", {})))
+        if isinstance(headers, dict):
+            content_type = next((value for key, value in headers.items()
+                                 if key.lower() == "content-type" and isinstance(value, str)), "")
     for source in (item, request):
-        for key in ("postData", "body", "payload", "data", "formData"):
+        for key in ("postData", "requestPostData", "requestBody", "body", "payload", "data", "formData"):
             value = source.get(key)
-            if value not in ("", None):
-                return value
-    return ""
+            if value is None:
+                continue
+            # Only postData is a HAR envelope; business JSON keeps its own keys.
+            if (key in {"postData", "requestPostData"} and isinstance(value, dict)
+                    and value.get("kind") != "request-body-shape" and isinstance(value.get("mimeType"), str)):
+                return value.get("text") if isinstance(value.get("text"), str) else None, value["mimeType"]
+            if key == "formData" and not content_type:
+                content_type = "application/x-www-form-urlencoded"
+            return value, content_type
+    return None, content_type
 
 
-def _parse_request_item(item: object) -> dict:
+def _parse_request_item(item: object, *, request_index: int = 0, from_capture: bool = False) -> dict:
+    """Parse one external request into the shared exact-URL/body-shape projection."""
     if isinstance(item, str):
-        raw_item = _parse_raw_request_line(item)
-        if raw_item:
-            return raw_item
-        return {"url": item.strip(), "method": "GET", "resource_type": "", "body": ""}
+        item = _parse_raw_request_line(item) or {"url": item.strip()}
     if not isinstance(item, dict):
-        return {"url": "", "method": "GET", "resource_type": "", "body": ""}
+        return {}
 
     request = item.get("request") if isinstance(item.get("request"), dict) else {}
-    url = _first_string(item.get("url"), item.get("requestUrl"), item.get("href"), request.get("url"))
+    response = item.get("response") if isinstance(item.get("response"), dict) else {}
+    url = _first_string(item.get("url"), item.get("requestUrl"), item.get("href"), item.get("documentURL"), request.get("url"))
+    if not url:
+        return {}
     method = _first_string(item.get("method"), request.get("method")) or "GET"
     resource_type = _first_string(
         item.get("resourceType"),
         item.get("resource_type"),
         item.get("type"),
-        item.get("initiatorType"),
         item.get("_resourceType"),
+        item.get("initiatorType"),
         request.get("resourceType"),
         request.get("type"),
     )
+    body, content_type = _body_from_request(item, request)
+    parsed_body = body
+    if isinstance(body, str):
+        try:
+            parsed_body = json.loads(body)
+        except json.JSONDecodeError:
+            parsed_body = None
     parsed = {
         "url": url,
+        "url_sha256": hashlib.sha256(url.encode("utf-8", errors="replace")).hexdigest(),
         "method": method.upper(),
-        "resource_type": resource_type.lower(),
-        "body": _body_from_request(item, request),
+        "resourceType": resource_type.lower(),
+        "status": item.get("status", response.get("status", "")),
+        "postData": _body_shape(body, parsed_body, content_type_hint=content_type),
     }
-    if isinstance(item.get("realtime"), dict):
-        parsed["realtime"] = item["realtime"]
-    for key in ("webSocketMessages", "websocketMessages", "frames", "events", "eventSourceMessages", "sseEvents"):
-        if isinstance(item.get(key), list):
-            parsed[key] = item[key]
+    realtime = _realtime_shape(item, request, parsed_body, request_index=request_index)
+    if not realtime and not from_capture:
+        realtime = _safe_realtime_projection(item.get("realtime"), request_index=request_index)
+    if realtime:
+        parsed["realtime"] = realtime
     return parsed
 
 
@@ -153,10 +183,10 @@ def _parse_raw_request_line(line: str) -> dict:
         return {}
     method = (match.group("method") or "GET").upper()
     url = (match.group("url") or "").rstrip(",")
-    return {"url": url, "method": method, "resource_type": "", "body": ""}
+    return {"url": url, "method": method, "status": int(match.group("status")) if match.group("status") else ""}
 
 
-def _body_param_keys(body: object) -> list[str]:
+def _body_param_keys(body: object, *, form_entries: bool = False) -> list[str]:
     if isinstance(body, dict):
         if body.get("kind") == "request-body-shape":
             return _dedupe_keep_order([
@@ -166,11 +196,7 @@ def _body_param_keys(body: object) -> list[str]:
             ])
         keys: list[str] = []
         for key, value in body.items():
-            if key in {"text", "raw"} and isinstance(value, str):
-                keys.extend(_body_param_keys(value))
-            elif key in {"params", "entries"} and isinstance(value, list):
-                keys.extend(_body_param_keys(value))
-            elif isinstance(value, str) and key in {"query", "graphql"}:
+            if isinstance(value, str) and key in {"query", "graphql"}:
                 keys.extend(re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", value))
                 keys.append(str(key))
             elif HIGH_SIGNAL_PARAM_RE.match(str(key)):
@@ -179,7 +205,7 @@ def _body_param_keys(body: object) -> list[str]:
     if isinstance(body, list):
         keys = []
         for item in body:
-            if isinstance(item, dict) and item.get("name"):
+            if form_entries and isinstance(item, dict) and item.get("name"):
                 keys.append(str(item["name"]))
             else:
                 keys.extend(_body_param_keys(item))
@@ -193,7 +219,7 @@ def _body_param_keys(body: object) -> list[str]:
     except json.JSONDecodeError:
         parsed = None
     if parsed is not None:
-        return _body_param_keys(parsed)
+        return _body_param_keys(parsed, form_entries=form_entries)
     # 无分隔符的纯文本 body 可能本身就是 token，不能把它误当作参数名公开。
     keys = [key for key, _ in parse_qsl(raw, keep_blank_values=True)] if "=" in raw else []
     keys.extend(re.findall(r'["\']([A-Za-z_][A-Za-z0-9_.:-]{0,80})["\']\s*:', raw))
@@ -220,7 +246,7 @@ def public_url_shape(url: str) -> str:
     return urlunparse(parsed._replace(netloc=netloc, query=query, fragment=""))
 
 
-def _body_shape(body: object) -> dict:
+def _body_shape(body: object, parsed_json: object, *, content_type_hint: str = "") -> dict:
     """把请求 body 压缩为参数与 GraphQL 操作形状，不保留值。"""
     if isinstance(body, dict) and body.get("kind") == "request-body-shape":
         return {key: body[key] for key in (
@@ -228,16 +254,17 @@ def _body_shape(body: object) -> dict:
             "graphql_operations", "graphql_variables", "body_bytes", "body_sha256",
             "graphql_batch_count",
         ) if key in body}
-    if body in (None, "", [], {}):
+    content_type_hint = content_type_hint.split(";", 1)[0].strip().lower()
+    if body is None or body == "":
         return {
             "kind": "request-body-shape",
-            "body_type": "empty",
-            "content_type_hint": "",
+            "body_type": "missing" if body is None else "empty",
+            "content_type_hint": content_type_hint,
             "parameter_names": [],
             "graphql_operations": [],
             "graphql_variables": [],
-            "body_bytes": 0,
-            "body_sha256": "",
+            "body_bytes": None if body is None else 0,
+            "body_sha256": "" if body is None else hashlib.sha256(b"").hexdigest(),
             "graphql_batch_count": 0,
         }
     if isinstance(body, str):
@@ -252,29 +279,24 @@ def _body_shape(body: object) -> dict:
         )
     )
     variables = _dedupe_keep_order(re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", raw))
-    try:
-        parsed_json = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        parsed_json = None
-    if operations:
+    if (content_type_hint and content_type_hint not in {"application/json", "application/graphql"}
+            and not content_type_hint.endswith("+json")):
+        body_type = "form" if content_type_hint == "application/x-www-form-urlencoded" else "text"
+        operations, variables = [], []
+    elif operations:
         body_type = "graphql"
-        content_type_hint = "application/graphql"
+        content_type_hint = content_type_hint or "application/graphql"
     elif parsed_json is not None:
         body_type = "json"
-        content_type_hint = "application/json"
-    elif "=" in raw and parse_qsl(raw, keep_blank_values=True):
+        content_type_hint = content_type_hint or "application/json"
+    elif not content_type_hint and "=" in raw and parse_qsl(raw, keep_blank_values=True):
         body_type = "form"
-        content_type_hint = "application/x-www-form-urlencoded"
+        content_type_hint = content_type_hint or "application/x-www-form-urlencoded"
     else:
         body_type = "text"
-        content_type_hint = "text/plain"
+        content_type_hint = content_type_hint or "text/plain"
     graphql_batch = 0
-    batch_source = body.get("text") if isinstance(body, dict) and isinstance(body.get("text"), str) else body
-    if isinstance(batch_source, str):
-        try:
-            batch_source = json.loads(batch_source)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            batch_source = None
+    batch_source = parsed_json
     if isinstance(batch_source, list) and batch_source and all(
         isinstance(item, dict) and isinstance(item.get("query"), str)
         for item in batch_source
@@ -284,7 +306,9 @@ def _body_shape(body: object) -> dict:
         "kind": "request-body-shape",
         "body_type": body_type,
         "content_type_hint": content_type_hint,
-        "parameter_names": _dedupe_keep_order(_body_param_keys(body)),
+        "parameter_names": [] if body_type == "text" else _dedupe_keep_order(
+            _body_param_keys(parsed_json if parsed_json is not None else body, form_entries=body_type == "form")
+        ),
         "graphql_operations": operations,
         "graphql_variables": variables,
         "body_bytes": len(raw.encode("utf-8", errors="replace")),
@@ -293,33 +317,23 @@ def _body_shape(body: object) -> dict:
     }
 
 
-def _realtime_shape(item: dict, *, request_index: int) -> dict:
+def _realtime_shape(item: dict, request: dict, batch: object, *, request_index: int) -> dict:
     """Expose ordered realtime message metadata without publishing values."""
-    resource_type = str(item.get("resourceType") or item.get("resource_type") or item.get("type") or "").lower()
     collections: list[tuple[str, object]] = []
     for key in ("webSocketMessages", "websocketMessages", "frames"):
-        if isinstance(item.get(key), list):
-            collections.extend(("websocket", value) for value in item[key])
+        values = item.get(key, request.get(key))
+        if isinstance(values, list):
+            collections.extend(("websocket", value) for value in values)
     for key in ("events", "eventSourceMessages", "sseEvents"):
-        if isinstance(item.get(key), list):
-            collections.extend(("sse", value) for value in item[key])
-    body = _body_from_request(item, item.get("request") if isinstance(item.get("request"), dict) else {})
-    batch_source = body.get("text") if isinstance(body, dict) and isinstance(body.get("text"), str) else body
-    if isinstance(batch_source, str):
-        try:
-            batch = json.loads(batch_source)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            batch = None
-    else:
-        batch = batch_source
+        values = item.get(key, request.get(key))
+        if isinstance(values, list):
+            collections.extend(("sse", value) for value in values)
     if isinstance(batch, list) and batch and all(
         isinstance(value, dict) and isinstance(value.get("query"), str) for value in batch
     ):
         collections.extend(("graphql-batch", value.get("query", "")) for value in batch)
-    if not collections and resource_type in {"websocket", "eventsource", "sse"}:
-        return {}
     messages = []
-    for index, (transport, value) in enumerate(collections):
+    for index, (transport, value) in enumerate(collections[:64]):
         if isinstance(value, dict):
             body = value.get("data", value.get("payload", value.get("body", value.get("message", ""))))
             marker = str(value.get("direction") or value.get("type") or value.get("event") or "").strip()
@@ -338,20 +352,30 @@ def _realtime_shape(item: dict, *, request_index: int) -> dict:
         })
     if not messages:
         return {}
-    return {
-        "message_count": len(messages),
+    return _safe_realtime_projection({
+        "message_count": len(collections),
         "messages": messages,
         "raw_ref": {"artifact": "network_private_json", "request_index": request_index},
-    }
+    }, request_index=request_index)
 
 
 def _safe_realtime_projection(value: object, *, request_index: int) -> dict:
     """Keep only bounded realtime metadata when reading a pre-shaped item."""
     if not isinstance(value, dict):
         return {}
+    raw_messages = value.get("messages")
+    if not isinstance(raw_messages, list):
+        return {}
+    raw_ref = value.get("raw_ref")
+    if (isinstance(raw_ref, dict) and type(raw_ref.get("request_index")) is int
+            and raw_ref["request_index"] >= 0):
+        request_index = raw_ref["request_index"]
     messages = []
-    for index, message in enumerate((value.get("messages") or [])[:64]):
+    for index, message in enumerate(raw_messages[:64]):
         if not isinstance(message, dict):
+            continue
+        digest = message.get("body_sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
             continue
         try:
             body_bytes = min(max(0, int(message.get("body_bytes", 0) or 0)), 2**31 - 1)
@@ -362,12 +386,15 @@ def _safe_realtime_projection(value: object, *, request_index: int) -> dict:
             "transport": str(message.get("transport") or "")[:32],
             "marker": str(message.get("marker") or "")[:128],
             "body_bytes": body_bytes,
-            "body_sha256": str(message.get("body_sha256") or "")[:64],
+            "body_sha256": digest,
         })
     if not messages:
         return {}
+    message_count = value.get("message_count")
+    if type(message_count) is not int or message_count < len(messages):
+        message_count = len(messages)
     return {
-        "message_count": len(messages),
+        "message_count": message_count,
         "messages": messages,
         "raw_ref": {"artifact": "network_private_json", "request_index": request_index},
     }
@@ -375,46 +402,17 @@ def _safe_realtime_projection(value: object, *, request_index: int) -> dict:
 
 def public_request_shape(item: object, *, request_index: int = 0) -> dict:
     """返回可进入公共 evidence/surface 的请求形状。"""
-    parsed = _parse_request_item(item)
-    if not parsed.get("url"):
-        return {}
-    raw_url = str(parsed["url"])
-    status = item.get("status", "") if isinstance(item, dict) else ""
-    if isinstance(item, dict) and isinstance(item.get("response"), dict):
-        status = item["response"].get("status", status)
-    realtime = (
-        _safe_realtime_projection(item.get("realtime"), request_index=request_index)
-        if isinstance(item, dict) and isinstance(item.get("realtime"), dict)
-        else _realtime_shape(item, request_index=request_index) if isinstance(item, dict) else {}
-    )
-    result = {
-        "url": public_url_shape(raw_url),
-        "url_sha256": hashlib.sha256(raw_url.encode("utf-8", errors="replace")).hexdigest(),
-        "method": parsed.get("method", "GET"),
-        "resourceType": parsed.get("resource_type", ""),
-        "status": status,
-        "postData": _body_shape(parsed.get("body", "")),
-    }
-    if realtime:
-        result["realtime"] = realtime
-    return result
+    parsed = _parse_request_item(item, request_index=request_index)
+    return {**parsed, "url": public_url_shape(parsed["url"])} if parsed else {}
 
 
-def public_request_shapes(items: list[object]) -> list[dict]:
-    return [
-        shape
-        for index, item in enumerate(items)
-        if (shape := public_request_shape(item, request_index=index))
-    ]
-
-
-def public_request_payload(payload: object, *, source: str = "") -> dict:
-    """保留内部分析请求的精确 URL；body 仍为带原件引用的结构摘要。"""
+def public_request_payload(payload: object, *, source: str = "", from_capture: bool = False) -> dict:
+    """Keep exact URLs/body shapes; raw captures cannot supply realtime projections."""
     requests = []
-    for index, item in enumerate(_request_items(payload)):
-        shape = public_request_shape(item, request_index=index)
+    items, _ = browser_export_items(payload)
+    for index, item in enumerate(items):
+        shape = _parse_request_item(item, request_index=index, from_capture=from_capture)
         if shape:
-            shape["url"] = _parse_request_item(item)["url"]
             requests.append(shape)
     return {
         "requests": requests,
@@ -436,7 +434,7 @@ def _is_api_url(url: str) -> bool:
 
 
 def _is_xhr_like(request: dict) -> bool:
-    resource_type = str(request.get("resource_type", "")).lower()
+    resource_type = str(request.get("resourceType", "")).lower()
     method = str(request.get("method", "GET")).upper()
     return resource_type in {"xhr", "fetch", "xmlhttprequest"} or method not in {"", "GET", "HEAD"} or _is_api_url(request["url"])
 
@@ -507,19 +505,23 @@ def write_browser_surface(
     snapshot_path: str | Path | None = None,
     capture_dir: str = "",
     merge_existing: bool = False,
+    requests: list[dict] | None = None,
 ) -> dict:
-    """Write recon/<target>/browser artifacts from captured request data."""
+    """Write Surface from a request file or the shared parser's ``requests`` projection."""
     browser_dir = Path(recon_root) / target_key / "browser"
     browser_dir.mkdir(parents=True, exist_ok=True)
     req_path = Path(requests_path) if requests_path else None
     snap_path = Path(snapshot_path) if snapshot_path else None
 
-    requests = [_parse_request_item(item) for item in _request_items(_load_json(req_path))]
-    requests = [item for item in requests if item.get("url")]
-    request_shapes = public_request_shapes(requests)
+    if requests is None:
+        requests = public_request_payload(_load_json(req_path))["requests"]
+    request_shapes = [{**item, "url": public_url_shape(item["url"])} for item in requests]
     xhr_urls = _dedupe_keep_order([item["url"] for item in requests if _is_xhr_like(item)])
     api_urls = _dedupe_keep_order([item["url"] for item in requests if _is_api_url(item["url"]) or item["url"] in xhr_urls])
-    params = _dedupe_keep_order([line for item in requests for line in _param_lines(item["url"], item.get("body", ""))])
+    params = _dedupe_keep_order([
+        line for item, shape in zip(requests, request_shapes)
+        for line in _param_lines(item["url"], shape["postData"])
+    ])
     forms = _extract_forms(snap_path)
 
     artifacts = {
@@ -607,15 +609,15 @@ JS_EXTENSIONS = (".js", ".mjs", ".cjs")
 def _is_js_request(item: dict) -> bool:
     """A request loaded a JS asset.
 
-    Primary signal: resource_type == 'script' (Playwright DevTools protocol).
-    Fallback (when resource_type is empty — e.g., raw browser capture output):
+    Primary signal: resourceType == 'script' (Playwright DevTools protocol).
+    Fallback (when resourceType is empty — e.g., raw browser capture output):
     URL extension matches a known JS extension, OR contains '.js?' (cache
     buster). Excludes everything else even when their URLs happen to contain
     'js' as a substring (e.g., '/api/jspatch/health').
     """
     if not isinstance(item, dict):
         return False
-    if str(item.get("resource_type", "")).lower() == "script":
+    if str(item.get("resourceType", "")).lower() == "script":
         return True
     url = str(item.get("url", "") or "").split("#", 1)[0]
     if not url:
@@ -647,8 +649,8 @@ def _extract_js_urls(requests_path: Path) -> list[str]:
     """Read a capture's requests.json and return JS-only URLs in order."""
     if not requests_path.is_file():
         return []
-    items = [_parse_request_item(item) for item in _request_items(_load_json(requests_path))]
-    js_urls = [item["url"] for item in items if item.get("url") and _is_js_request(item)]
+    items, _ = browser_export_items(_load_json(requests_path))
+    js_urls = [item["url"] for item in items if isinstance(item, dict) and item.get("url") and _is_js_request(item)]
     return _dedupe_keep_order(js_urls)
 
 

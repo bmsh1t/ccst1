@@ -3,46 +3,29 @@
 This file owns cross-cutting evidence, delivery and publication checks.
 The complete 6k `rules/vuln-report-format.md` owns default SRC severity, reportability,
 prose, language, chapters and layout; read it with its runtime adapter.
+Explicit destination alternatives follow the report-writing module without changing evidence or verdicts.
 `skills/src-hunter/modules/triage-validation.md` owns validation verdicts;
 `skills/src-hunter/modules/report-writing.md` binds authored bytes to existing owners.
 Do not maintain another default format, title formula or word budget here.
 
 ---
 
-## 1. Claim Presentation
-
-Apply the complete 6k report-format and adapter through the report-writing module. Unproven impact
-stays an evidence gap, not a stronger claim created during report drafting.
-
-## 2. RUN 7-QUESTION GATE BEFORE WRITING
+## 1. RUN 7-QUESTION GATE BEFORE WRITING
 
 Apply Q1-Q7 and the four gates in `skills/src-hunter/modules/triage-validation.md` before
 reporting. That module owns REPORT, CHAIN_REQUIRED, DOWNGRADE, and DO_NOT_REPORT
 precedence; this file does not redefine the verdict.
 
-## 3. ALWAYS INCLUDE PROOF OF CONCEPT
+## 2. ALWAYS INCLUDE PROOF OF CONCEPT
 
 The PoC must prove real impact, but it should use the lowest-risk evidence that
 answers the triager's question. Do not hard-ban stronger proof: when minimal
 proof is not enough to establish impact, escalate deliberately and document why.
 
-Default proof ladder:
-
-- IDOR → show authorization boundary failure with two actors and private data
-  evidence; minimize copied victim data to the smallest field/sample needed.
-- XSS → show execution in the affected security context; cookie/session proof is
-  only needed when it changes impact and the test is authorized and contained.
-- SSRF → show server-side fetch impact beyond DNS-only, such as a safe internal
-  endpoint response, controlled callback metadata, or non-sensitive service
-  fingerprint.
-- SQLi → show query control with safe read-only evidence first, such as boolean
-  diff, bounded row count, DB fingerprint, current user/version, or a controlled
-  marker. Extract actual table data only when it is necessary, authorized, and
-  minimized.
-- Secret / CI/CD / cloud → prove ownership and usable permissions with the least
-  sensitive action. Secret exfiltration, privileged workflow execution, or cloud
-  data access is reserved for cases where lower-risk proof cannot establish
-  impact and `rules/ccst/red-lines.md` allows the action.
+Use the proof choices in `skills/src-hunter/modules/triage-validation.md` Q6.
+For Secret / CI/CD / cloud evidence, prove ownership and usable permissions with
+the least sensitive action; stronger proof requires necessity and the controls
+in `rules/ccst/red-lines.md`.
 
 Escalated proof requirements:
 
@@ -52,13 +35,10 @@ Escalated proof requirements:
 3. Preserve exact request/response or workflow evidence.
 4. Record cleanup or rollback steps when state changes are involved.
 
-A "technically possible" finding without PoC is an Informational at best; an
-unnecessarily invasive PoC is also a bad report.
+An unproven impact remains an evidence gap; report drafting cannot promote it.
+Avoid unnecessarily invasive proof.
 
-## 4. CVSS IS OPTIONAL EXTERNAL DELIVERY METADATA
-
-Don't claim Critical for a Medium bug. Triagers trust you less for every overclaim.
-Don't claim Medium for a Critical — you're leaving money on the table.
+## 3. CVSS IS OPTIONAL EXTERNAL DELIVERY METADATA
 
 CVSS does not gate discovery, validation, evidence, Finding, Queue, or local
 report generation. When a destination platform requires it, preserve any
@@ -66,40 +46,23 @@ recorded `cvss.version`, `cvss.score`, and `cvss.vector` unchanged. Legacy CVSS
 records remain readable, but prose, templates, and model estimates must not
 recalculate or overwrite a stored result. If none was recorded, supply only
 the destination's required report field under its current rules, without writing
-canonical validation state. Examples below are external delivery calibration
-references only.
-
-### CVSS 3.1 Calibration Reference
-
-These examples calibrate optional external delivery fields only. They never
-create or override core validation state.
-
-| Finding | Score | Severity | Vector |
-|---|---:|---|---|
-| IDOR read PII, any user, auth required | 6.5 | Medium | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N |
-| IDOR write/delete, any user | 8.1 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
-| Auth bypass → admin panel | 9.8 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
-| Stored XSS → cookie theft, stored | 8.5 | High | AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N |
-| SQLi → full DB dump | 9.1 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N |
-| SSRF → cloud metadata | 10.0 | Critical | AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N |
-| Race → double spend | 6.8 | Medium | AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N |
-| GraphQL auth bypass | 8.1 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
-| JWT none algorithm | 9.8 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
+canonical validation state.
 
 When the destination requires CVSS, use observed preconditions and demonstrated
 impact to select metrics; do not infer severity from a bug-class name or scanner label.
 
-## 5. SEPARATE EVIDENCE GAPS FROM DESTINATION EXCLUSIONS
+## 4. SEPARATE EVIDENCE GAPS FROM DESTINATION EXCLUSIONS
 
 Use the evidence pitfalls and Q7 destination checks in
 `skills/src-hunter/modules/triage-validation.md`. A policy rejection cannot refute technical
 evidence; an unsupported impact cannot become valid because a destination pays.
 
-## 6. VERIFY DATA ISN'T EXPECTED PUBLIC
+## 5. VERIFY DATA ISN'T EXPECTED PUBLIC
 
 Before submitting an information disclosure finding, check whether the data is
 genuinely intended to be public — public reachability is not the same as
 expected exposure:
+
 1. Open the target in an incognito browser (not logged in)
 2. Can you see the same data without authentication?
 3. If yes, do NOT stop there: check business expectation — object ownership,
@@ -109,7 +72,7 @@ expected exposure:
    "is visible without login".
 4. Only conclude not-a-bug when the data is intended to be public by design.
 
-## 7. TWO TEST ACCOUNTS FOR IDOR
+## 6. TWO TEST ACCOUNTS FOR IDOR
 
 A cross-identity claim needs independently attributable actor and victim-object evidence.
 Two controlled accounts provide the clearest comparison when available; a second account
@@ -119,11 +82,3 @@ as uncertainty, never call access to one's own public object IDOR.
 For an identity-boundary claim, report must show the smallest reproducible
 actor/object differential, for example: Account A's session reached Account B's
 private object. Use an equivalent artifact when the boundary is not HTTP.
-
-## 8. Delivery
-
-Use complete 6k report-format for default SRC structure and wording; use
-`skills/src-hunter/modules/report-writing.md` for evidence/publication binding and
-explicitly requested destination alternatives. Delivery choices
-do not change the validation result or evidence requirements; optional recorded
-CVSS remains read-only metadata.

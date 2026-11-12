@@ -37,6 +37,7 @@ try:
         compact_browser_evidence, console_shape, snapshot_shape,
     )
     from tools.browser_surface import (
+        browser_export_items,
         build_page_js_map,
         load_page_js_map,
         public_request_payload,
@@ -51,6 +52,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         compact_browser_evidence, console_shape, snapshot_shape,
     )  # type: ignore
     from browser_surface import (  # type: ignore
+        browser_export_items,
         build_page_js_map,
         load_page_js_map,
         public_request_payload,
@@ -71,17 +73,6 @@ DEFAULT_EVIDENCE_ROOT = BASE_DIR / "evidence"
 DEFAULT_RECON_ROOT = BASE_DIR / "recon"
 DEFAULT_FOCUSED_LIMIT = 8
 DEFAULT_BROWSER_IMPORT_MAX_BYTES = 32 * 1024 * 1024
-RAW_REQUEST_RE = re.compile(
-    r"""
-    ^\s*
-    (?:\d+\.\s*)?
-    (?:\[(?P<method>GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\]\s*)?
-    (?P<url>https?://[^\s]+|/[^\s]+)
-    (?:\s*=>\s*\[(?P<status>\d{3})\].*)?
-    \s*$
-    """,
-    re.I | re.X,
-)
 
 
 def _now_utc() -> str:
@@ -145,62 +136,6 @@ def _capture_network_payload(path: str | Path | None) -> tuple[Any, bytes | None
     return payload, raw, "har" if isinstance(payload, dict) and isinstance(payload.get("log"), dict) else "json"
 
 
-def _load_network_payload(path: str | Path | None) -> Any:
-    return _capture_network_payload(path)[0]
-
-
-def _json_items(payload: Any, *, _allow_data_envelope: bool = True) -> list[Any]:
-    """Return request/console item arrays from common MCP JSON shapes."""
-    if isinstance(payload, list):
-        return payload
-    if not isinstance(payload, dict):
-        return []
-    for key in (
-        "requests",
-        "networkRequests",
-        "consoleMessages",
-        "items",
-        "entries",
-        "messages",
-        "network",
-        "data",
-    ):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return value
-    log = payload.get("log")
-    if isinstance(log, dict) and isinstance(log.get("entries"), list):
-        return log["entries"]
-    # MCP 包装层仅解一层 data，避免递归误读请求 body。
-    data = payload.get("data")
-    if _allow_data_envelope and isinstance(data, dict):
-        nested = _json_items(data, _allow_data_envelope=False)
-        if nested:
-            return nested
-    for key in ("raw", "result"):
-        value = payload.get(key)
-        if isinstance(value, str):
-            return _raw_request_items(value)
-    return []
-
-
-def _raw_request_items(raw: str) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for line in raw.splitlines():
-        match = RAW_REQUEST_RE.match(line.strip())
-        if not match:
-            continue
-        item: dict[str, Any] = {
-            "url": (match.group("url") or "").rstrip(","),
-            "method": (match.group("method") or "GET").upper(),
-            "resourceType": "",
-        }
-        if match.group("status"):
-            item["status"] = int(match.group("status"))
-        items.append(item)
-    return items
-
-
 def _load_console_payload(path: str | Path | None) -> tuple[Any, str]:
     """读取 console 文件，同时保留需要进入私有证据层的原文。"""
     if not path:
@@ -219,8 +154,8 @@ def _load_console_payload(path: str | Path | None) -> tuple[Any, str]:
 
 
 def _console_items(payload: Any) -> list[dict[str, Any]]:
-    raw = payload.get("raw") if isinstance(payload, dict) else ""
-    items = [] if isinstance(raw, str) else _json_items(payload)
+    raw = payload.get("raw") if isinstance(payload, dict) else None
+    items = [] if isinstance(raw, str) else browser_export_items(payload)[0]
     if items:
         return [item for item in items if isinstance(item, dict)]
     if not isinstance(raw, str):
@@ -230,8 +165,10 @@ def _console_items(payload: Any) -> list[dict[str, Any]]:
         text = line.strip()
         if not text or text.lower().startswith(("total messages:", "returning ", "note:")):
             continue
-        match = re.match(r"^\[?(error|warning|warn|info|debug|log)\]?[:\s-]+", text, re.I)
-        level = (match.group(1).lower() if match else "log").replace("warn", "warning")
+        match = re.match(r"^(?:\[\s*\d+(?:\.\d+)?ms\]\s*)?\[?(error|warning|warn|info|debug|verbose|log)\]?[:\s-]+", text, re.I)
+        level = match.group(1).lower() if match else "log"
+        if level == "warn":
+            level = "warning"
         parsed.append({"type": level, "text": text})
     return parsed
 
@@ -257,98 +194,6 @@ def _archive_private_artifact(
         return {}
     copied = copy_private_file(source_path, destination)
     return _private_file_meta(copied)
-
-
-def _first_string(*values: Any) -> str:
-    for value in values:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
-def _body_from_item(item: dict[str, Any], request: dict[str, Any]) -> Any:
-    """Extract request body fields from Chrome DevTools / Playwright MCP shapes."""
-    candidates = [
-        item.get("postData"),
-        item.get("requestPostData"),
-        item.get("body"),
-        item.get("payload"),
-        item.get("data"),
-        request.get("postData"),
-        request.get("body"),
-        request.get("payload"),
-        request.get("data"),
-    ]
-    for value in candidates:
-        if value not in ("", None):
-            return value
-    return ""
-
-
-def normalize_mcp_network(payload: Any) -> list[dict[str, Any]]:
-    """Normalize MCP network exports to the shape consumed by browser_surface.
-
-    Supported inputs include:
-    - chrome-devtools MCP `list_network_requests` JSON arrays
-    - playwright MCP network request arrays
-    - HAR-like `{log:{entries:[...]}}`
-    - project-friendly `{requests:[...]}`
-    """
-    normalized: list[dict[str, Any]] = []
-    for item in _json_items(payload):
-        if isinstance(item, str):
-            text = item.strip()
-            if text:
-                normalized.append({"url": text, "method": "GET", "resourceType": "", "postData": ""})
-            continue
-        if not isinstance(item, dict):
-            continue
-
-        request = item.get("request") if isinstance(item.get("request"), dict) else {}
-        response = item.get("response") if isinstance(item.get("response"), dict) else {}
-        url = _first_string(
-            item.get("url"),
-            item.get("requestUrl"),
-            item.get("href"),
-            item.get("documentURL"),
-            request.get("url"),
-        )
-        if not url:
-            continue
-        method = _first_string(item.get("method"), request.get("method")) or "GET"
-        resource_type = _first_string(
-            item.get("resourceType"),
-            item.get("type"),
-            item.get("_resourceType"),
-            item.get("initiatorType"),
-            request.get("resourceType"),
-            request.get("type"),
-        )
-        status = item.get("status", response.get("status", ""))
-        normalized_item = {
-            "url": url,
-            "method": method.upper(),
-            "resourceType": resource_type.lower(),
-            "status": status,
-            "postData": _body_from_item(item, request),
-        }
-        for key in ("webSocketMessages", "websocketMessages", "frames", "events", "eventSourceMessages", "sseEvents"):
-            value = item.get(key, request.get(key))
-            if isinstance(value, list):
-                normalized_item[key] = value
-        normalized.append(normalized_item)
-    return normalized
-
-
-def _network_capture_failed(payload: Any) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    if payload.get("success") is False:
-        return True
-    return str(payload.get("status") or "").strip().lower() in {
-        "error", "failed", "failure", "timeout", "stale",
-    }
-
 
 
 def import_mcp_browser_evidence(
@@ -409,18 +254,24 @@ def import_mcp_browser_evidence(
         selected_path = network_path or har_path
         network_payload, network_bytes, network_format = _capture_network_payload(selected_path)
         captured_inputs = {str(selected_path): (network_payload, network_bytes, network_format)}
-        requests = normalize_mcp_network(network_payload)
+        network_items, source_failed = browser_export_items(network_payload)
+        request_payload = public_request_payload(network_items, source=safe_source, from_capture=True)
+        requests = request_payload["requests"]
         if (
-            (not requests or _network_capture_failed(network_payload))
+            (not requests or source_failed)
             and har_path
             and str(har_path) != str(selected_path)
         ):
             har_payload, har_bytes, har_format = _capture_network_payload(har_path)
             captured_inputs[str(har_path)] = (har_payload, har_bytes, har_format)
-            har_requests = normalize_mcp_network(har_payload)
-            if har_requests and not _network_capture_failed(har_payload):
+            har_items, har_failed = browser_export_items(har_payload)
+            har_request_payload = public_request_payload(har_items, source=safe_source, from_capture=True)
+            har_requests = har_request_payload["requests"]
+            if har_requests and not har_failed:
                 network_payload, requests = har_payload, har_requests
+                request_payload = har_request_payload
                 network_bytes, network_format = har_bytes, har_format
+                source_failed = har_failed
         network_source = {}
         if network_bytes is not None:
             original_path = private_dir / "network.source"
@@ -432,7 +283,7 @@ def import_mcp_browser_evidence(
             write_private_json(private_dir / "network.raw.json", network_payload)
         )
         requests_file = capture_dir / "requests.json"
-        _write_json(requests_file, public_request_payload({"requests": requests}, source=safe_source))
+        _write_json(requests_file, request_payload)
         artifacts["requests_json"] = str(requests_file)
         network_fingerprint = hashlib.sha256(requests_file.read_bytes()).hexdigest()
 
@@ -498,6 +349,7 @@ def import_mcp_browser_evidence(
             recon_root=recon_root,
             target_key=target_key,
             requests_path=requests_file,
+            requests=requests,
             snapshot_path=artifacts.get("snapshot_private_txt", ""),
             capture_dir=str(capture_dir),
             merge_existing=True,
@@ -505,7 +357,6 @@ def import_mcp_browser_evidence(
         summary_path = capture_dir / "summary.json"
         pointer_path = root / target_key / "browser" / "last-capture.json"
         browser_counts = browser_surface.get("counts") if isinstance(browser_surface, dict) else {}
-        source_failed = _network_capture_failed(network_payload)
         has_core_network = bool(requests) and not source_failed
         has_any_artifact = bool(
             requests or copied_snapshot or console_items or copied_screenshot or private_artifacts
@@ -663,10 +514,11 @@ def _load_focused_manifest(path: str | Path) -> dict[str, Any]:
     return payload
 
 
-def _manifest_capture_identity(manifest_path: str | Path, url: str) -> str:
+def _manifest_capture_identity(manifest_path: str | Path, url: str, capture_key: str = "") -> str:
     """Stable capture identity for one manifest item, surviving retries.
 
-    Derived from the manifest bytes plus the item URL: the same lane evidence
+    Derived from manifest bytes, URL and any additional same-URL declaration:
+    the same lane evidence
     retried after an interrupted terminal commit re-derives the same identity
     and confirms the existing capture instead of publishing a duplicate.
     """
@@ -677,6 +529,9 @@ def _manifest_capture_identity(manifest_path: str | Path, url: str) -> str:
         digest.update(str(manifest_path).encode("utf-8", "replace"))
     digest.update(b"|")
     digest.update(str(url or "").encode("utf-8", "replace"))
+    if capture_key:
+        digest.update(b"|")
+        digest.update(capture_key.encode("utf-8"))
     return f"mcp-{digest.hexdigest()[:24]}"
 
 
@@ -713,10 +568,11 @@ def import_focused_mcp_manifest(
         if not url:
             skipped.append({"url": "", "reason": "invalid_url"})
             continue
-        if url in seen:
+        capture_key = json.dumps(raw, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        if capture_key in seen:
             skipped.append({"url": public_url_shape(url), "reason": "duplicate"})
             continue
-        seen.add(url)
+        seen.add(capture_key)
         parsed_url = urlparse(url)
         if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
             skipped.append({"url": public_url_shape(url), "reason": "invalid_url"})
@@ -727,7 +583,7 @@ def import_focused_mcp_manifest(
         if len(selected) >= max_urls:
             skipped.append({"url": public_url_shape(url), "reason": "budget_exhausted"})
             continue
-        selected.append((url, raw))
+        selected.append((url, raw, capture_key))
 
     evidence = Path(evidence_root)
     recon = Path(recon_root)
@@ -740,7 +596,12 @@ def import_focused_mcp_manifest(
     successful = 0
     complete = 0
 
-    for index, (url, item) in enumerate(selected, 1):
+    captured_urls = set()
+    for index, (url, item, capture_key) in enumerate(selected, 1):
+        # Preserve the existing first-URL receipt; later states need separate captures.
+        run_identity = _manifest_capture_identity(
+            manifest_path, url, capture_key if url in captured_urls else "")
+        captured_urls.add(url)
         paths = {
             key: _resolve_manifest_artifact(item.get(key))
             for key in (
@@ -763,7 +624,7 @@ def import_focused_mcp_manifest(
             summary = import_mcp_browser_evidence(
                 target=target,
                 url=url,
-                run_identity=_manifest_capture_identity(manifest_path, url),
+                run_identity=run_identity,
                 network_path=paths["network"],
                 snapshot_path=paths["snapshot"],
                 console_path=paths["console"],

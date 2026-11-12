@@ -20,8 +20,8 @@ RECOVERY_PARTS = 8
 CONTEXT_UNITS = 7000
 DYNAMIC_OUTPUT_LIMIT = 24000
 CONTEXT_SOURCES = ((CORE_SKILL_PATH, None), ("skills/runtime-protocol.md", None),
-                   ("commands/autopilot.md", "## Shared Automation"),
-                   ("commands/autopilot-round.md", "## Prepare And Terminal Precheck"))
+                   ("skills/autopilot-protocol.md", "## Shared Automation"),
+                   ("skills/autopilot-round-protocol.md", "## Prepare And Terminal Precheck"))
 
 
 def json_digest(value: object) -> str:
@@ -85,6 +85,10 @@ def capture_context(repo_root: Path | str, *, round_mode: bool = False) -> dict:
         bindings[relative] = digest
         sections.append(f"CCST_SOURCE {root / relative}\nPACKAGE_ROOT {root / Path(relative).parent}\n"
                         f"SHA256 {digest}\nBODY_BEGIN\n{body}\nBODY_END")
+    for relative, heading in (("commands/autopilot.md", "## Shared Automation"),
+                              ("commands/autopilot-round.md", "## Prepare And Terminal Precheck"))[:2 if round_mode else 1]:
+        text, bindings[relative] = _source(root, relative)
+        _body(text, heading)
     text = "\n\n".join(sections)
     return {"text": text, "sha256": json_digest(bindings), "sources": bindings,
             "sections": sections, "chunks": context_chunks(text)}

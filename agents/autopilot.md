@@ -12,7 +12,7 @@ model: inherit
 # Autopilot Agent
 
 This is an explicitly invoked optional Claude subagent, not the implicit backend
-of the `/autopilot` slash command. `commands/autopilot.md` is the sole controller;
+of the `/autopilot` slash command. The parent follows `skills/autopilot-protocol.md`;
 the parent alone claims lanes, writes owner state, and decides closure.
 
 ## Use When
@@ -134,4 +134,4 @@ without inventing new claims or evidence bindings. Include relevant actor/object
 facts, conditional experience, candidate identity/missing proof and resumable work
 in 「待落库」. The parent reviews and writes each accepted entry through the existing
 owners before starting the next lane, then consumes receipts and returns to
-Shared Automation's Refresh and next-work decision in `commands/autopilot.md`.
+Shared Automation's Refresh and next-work decision in `skills/autopilot-protocol.md`.

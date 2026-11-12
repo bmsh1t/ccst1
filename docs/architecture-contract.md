@@ -218,9 +218,10 @@ Campaign seeds retain cross-target discovery progress and references to establis
 The original rules own investigation cadence and default SRC
 prose; CCST retains Scope/Auth, claims, observations, cleanup and publication owners.
 Explicit Autopilot integration follows `docs/ccst-runtime-adapter.md`.
-The original S52's missing Phase 0 and other source defects stay visible. Browser
-and FOFA support assets are in `bin/` and `mcp-servers/`; their presence does not
-configure or enable an MCP host. Original Grok user guides are source material under
+The original S52's missing Phase 0 and other source defects stay visible. The host
+configures official browser MCP servers; this project owns no browser launcher or slot locks.
+FOFA support remains in `mcp-servers/`; its presence does not enable an MCP host.
+Original Grok user guides are source material under
 `docs/user-guide/`, with their host applicability stated separately.
 
 `knowledge/methods/clown/`, its manifest and `.history` retain earlier source bytes,

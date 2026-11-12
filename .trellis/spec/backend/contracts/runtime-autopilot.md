@@ -29,7 +29,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 
 - The current Claude session alone selects hypotheses, routes, depth and stop
   points, and coordinates writes through existing owners. No second controller.
-- `commands/autopilot.md#investigation-skill` triggers the shared
+- `skills/autopilot-protocol.md#investigation-skill` triggers the shared
   `skills/runtime-protocol.md#native-skill-loading` contract for `src-hunter`
   before selecting new investigative work, after Bootstrap admission and required
   execution recovery. `/autopilot-round` consumes the same Shared Automation section;
@@ -41,6 +41,12 @@ mechanical safety, evidence and recovery constraints govern execution.
   its source hash matches the admitted host binding. Description/manifest/hash
   metadata is not body context. The original description remains unchanged for
   native discovery; no Python selector, Store load receipt or per-lane invocation.
+- Slash templates contain entry/permission gates and compatibility navigation only.
+  `skills/autopilot-protocol.md` and `skills/autopilot-round-protocol.md` own the
+  original automation bodies, delivered once through the same numbered transport.
+  They are plain installed resources, not additional Skill entries. Source hashes
+  bind those resources and the applicable command entry; entry/permission changes
+  remain critical drift. Both resources belong to the existing critical manifest.
 - The host stores only private session/invocation/target/arguments, original limits
   and a current source fingerprint. SessionStart settings hooks restore complete source parts for
   compact/restart. Prompt/target-bound `autopilot_host state` combines loop-check,
@@ -89,8 +95,22 @@ mechanical safety, evidence and recovery constraints govern execution.
   Review checks do not prove semantic value or
   replace Closure exhaustion. A batch list uses its existing state continuation,
   never a synthetic list Store/review.
+- Stop review failures name missing/invalid/follow-up/incomplete/stale review,
+  stale Closure acquisition or missing/mismatched termination separately and return
+  a current checkout/target Closure command plus the existing Checkpoint contract.
+  A form_insufficient wrapper with review_status=follow_up still directs the
+  existing next_action review even when missing_tokens is empty.
+  A missing stopping attestation does not establish worthwhile new investigation.
+  Result collection/write-back precedes final Closure/review; after needed Refresh,
+  use its returned identity, record an evidence-backed review and reread Closure.
+  Stop never chooses a reason, writes a review or relaxes normal-stop admission.
 - Repeated identical Stop rejection suspends as incomplete, without a default
-  investigation cap. Refreshing state does not clear that progress identity.
+  investigation cap. The existing last_stop_basis includes review status,
+  review_status, sorted unique missing_tokens, residual presence and snapshot_stale,
+  alongside owner components/tasks/termination. Review-only repair is progress even
+  though Closure excludes its own review from the owner snapshot; decision/residual
+  prose and missing-token order do not reset protection. Repeated suspension retains the
+  specific reason and current recovery command. Refreshing state does not clear that progress identity.
   New user prompts suspend enforcement; same-task continuation explicitly rearms
   using the current state command. Ordinary questions, cancellation and changed tasks
   remain suspended; intent is the model's choice, not a hook prose classifier.
@@ -109,6 +129,13 @@ mechanical safety, evidence and recovery constraints govern execution.
   Native background `task-notification` envelopes delivered through
   UserPromptSubmit preserve the binding unchanged; they never suspend an active
   investigation or rearm a suspended one. Ordinary user prompts still suspend.
+  Match the complete reserved envelope, including optional `tool-use-id` and
+  `note`/`result`/`usage` tails; payloads are opaque text, not well-formed XML.
+  Repeated completed/failed/killed notifications preserve status, prompt, invocation
+  and binding bytes. Envelope recognition is not sender authentication; surrounding
+  user prose is a real prompt and retains the ordinary suspension path.
+  Scan opaque field boundaries without combinatorial regex backtracking; malformed
+  repeated closing tags must not stall the binding lock.
 - Skill application retains the same session, target type/Scope, mode and any explicit
   user/host limits, or `unset`. Waits, terminal cleanup and execution recovery do not require a fresh
   Skill call. Shortlist and complete relevant methods follow Shared Knowledge Recall;
@@ -199,15 +226,17 @@ mechanical safety, evidence and recovery constraints govern execution.
   decide Closure or extend `max_lanes`. Unavailable/failed native Agent is explicit
   incomplete independent review; the parent continues its own investigation.
   The dispatch requests `run_in_background=false` because the next selection depends
-  on it; current Claude CLI defaults to background. A returned handle requires native
-  TaskOutput/TaskStop within the assigned allocation; both entries allow those tools.
+  on it; current Claude CLI defaults to background. A returned handle requires its actual
+  terminal result within the assigned allocation. Consume the complete matching native notification;
+  TaskOutput/TaskStop depend on host availability, even when the entry allows those tool names.
+  Missing/incomplete results remain pending; do not invent or repeatedly call an unavailable tool.
   Dispatch acknowledgment is not review completion. Same frontend/anonymous denial
   permits deduplicating that layer only; independent origin/object authorization
   remains subject to dig-scope-workflow's evidence and session conditions.
 - Compressed guidance must reference real sections that retain the displaced
   constraints, not merely existing files. Keep command frontmatter, Bootstrap
   expansions, critical manifest and consumed headings stable: round reads the
-  complete `Shared Automation` H2; `_lane_contract_text` includes lane subsections
+  complete delivered Shared Automation protocol; `_lane_contract_text` includes lane subsections
   and fenced content. Retain CLAUDE's complete 6k imports. Measure resident imports,
   command bodies, on-demand lanes and optional agents separately; byte counts do
   not establish token, cost or model-behavior improvements.
@@ -391,6 +420,10 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Host refresh: stale binding / invalid Scope/Auth or failed read | Reject stale caller / remain inactive (completed on failed reopen); no init or Bootstrap; recovery adds root, arguments, batch/mode and memory |
 | Completed task, current explicit continuation | New review invocation identity, original time/Round allocation and owner memory retained |
 | Completed task, question/notification/restart alone | Remain completed; no automatic continuation; failed restart also expires an old prompt grant |
+| Complete native background envelope, including result/usage | No binding write or continuation grant in active/suspended/completed states |
+| Missing/stale/invalid review or mismatched termination | Block with precise diagnosis and existing in-session repair steps; no inferred new investigation |
+| Same owners/termination, fewer missing review tokens | Continue repair; not an identical no-progress Stop |
+| Same requirements, changed decision/residual prose or token order | Retain repeated-Stop protection; suspension reports its specific blocker |
 | Goal changed/cleared or captured memory binding stale | Old review becomes stale / Closure requests a fresh state; handoff-only changes do not alter semantic basis |
 | Exact subject closure with identity-free tested Coverage cell | `missing_matching_ledger_terminal` |
 | Valid global review covers non-blocking bounded residuals | `handoff` with `bounded_recon_residual_deferred`; blocking owner obligations keep their entries |
@@ -398,6 +431,7 @@ mechanical safety, evidence and recovery constraints govern execution.
 | Post-action projection with new or unread Surface material | Keep reading references, display remainder and next-step explanation without creating Actions |
 | First reason is an exact review-required case, including form_insufficient | All three coordinator paths return `review_required`; diagnostics remain intact |
 | Review-like prefix or non-first reason | Existing normal routing; no broadened review gate |
+| Recorded review basis unchanged, whole digest changed | Consume Closure validity; no re-review or source inspection solely for digest drift |
 | Snapshot races during review | Both fields expose the current recovery head |
 | Repeated identity enrichment | Same summary path; historical `intelligence.md` untouched |
 | Static review of task-folder guidance and active callers | No duplicate startup chain or mandatory shared note file; explicit target, durable candidate handoff and evidence/cleanup boundaries remain |
@@ -417,6 +451,27 @@ new round. Ordinary settlement without a review reason retains its prior status.
 
 ### 6. Tests Required
 
+- The 2026-11-10 live Stop acceptance uses the installed Claude CLI, the configured real
+  model provider and isolated real Store/Closure/Checkpoint owners. Preserve per-request
+  usage including child requests, one user input per case, actual hook transitions,
+  review receipts and source hashes. Missing/stale/mismatched reviews must recover in-session;
+  normal scope-boundary stops retain residuals. A random result read only by a real background
+  child must arrive in a matching native notification, leave binding bytes/mtime unchanged,
+  and reach the parent's owner review before Stop releases. Keep failed/budgeted trials
+  and unavailable host tools visible. Fixture bindings do not prove full Bootstrap,
+  browser use, unbounded investigation or model reliability across repeated real targets.
+- `11-10-autopilot-stop-recovery/research/check_stop_recovery.py` under
+  `.trellis/tasks/` compares old/new allow decisions, reproduces review-only
+  progress collisions, and exercises the real isolated Claude CLI's Stop event
+  sequence with scripted loopback responses and explicit synthetic owner projections.
+  Repair must release only after accepted facts; unchanged failure suspends with
+  its reason, active execution blocks, and explicit user stop stays inactive.
+  This proves host transport, not model judgment, real target state or full owner writes.
+- Replay the captured native notification and legacy/minimal envelopes against
+  disposable bindings; cover optional note/result/usage, failed/killed, opaque
+  angle brackets, repeats, cancellation/questions, surrounding prose and child events.
+  Assert binding bytes/mtime and prompt/invocation identity, not only status. Include
+  child cancellation and a timed malformed repeated-tail case to distinguish guards.
 - `python3 -I research/verify_autopilot_continuity.py` uses a temporary Store and
   host binding to check current/cleared goals, review v3/legacy behavior, a handoff
   outside the five-entry history, compact/restart/prompt/notification sequences,
@@ -505,6 +560,8 @@ Wrong: observed JS / missing actor / Intel lead -> mandatory route or session ta
 Correct: observations -> native reasoning; explicit owner command -> durable work
 Wrong: every continuation -> full Bootstrap + separate state read
 Correct: bound state refresh; only lost context adds owner/memory recovery
+Wrong: native result/usage tail -> treat as user request and suspend
+Correct: complete reserved envelope -> preserve binding; ordinary user prose -> suspend
 Wrong: completed refresh reuses the old stop review or restarts the budget
 Correct: explicit current-prompt reopen renews only review identity and preserves allocation
 Wrong: no generated frontier -> target exhausted
@@ -751,6 +808,11 @@ runtime markers, or target-owned URL filtering changes.
   Autopilot state owner. `status=ok` with `advisory_exceeded=true` remains eligible
   for normal Closure; `status=partial` is a resumable handoff and cannot be treated
   as tested-clean or target exhaustion.
+  Local `--recon-only --deep --recon-collect katana|ffuf` preserves prior manifest
+  receipts. `runtime_state._phase_gate_state` retains unrepaired collector failures
+  as `collector:<name>` for full/fast/compact review; `_derive_current_status` stays
+  partial until that collector succeeds. Local run_budget still describes the
+  latest call. These residuals neither force Recon nor preempt independent work.
 - State selector priority is `wait` -> owner revalidation/structured candidate
   evidence/validation -> validation-runner candidate -> substantive durable queue
   -> pending report/draft -> handoff. Shared Automation selects new investigation,
@@ -791,7 +853,7 @@ runtime markers, or target-owned URL filtering changes.
   `scan`. List targets may acquire only `recon`; list scan/hunt is invalid.
 - List state reads current normalized list entries on every invocation and returns
   `target_kind=list`, `next_action` in `invalid_batch_target`, `run_batch_recon`,
-  `wait_recon`, `select_completed_domain`, or `batch_failed`, plus current,
+  `wait_recon`, or `select_completed_domain`, plus current,
   completed, failed, pending, candidate, and artifact projections.
 - A completed domain must be selected and passed to a new single-target state
   preflight before surface/scan/hunt. `recon/<list-stem>/` remains an index.
@@ -806,6 +868,13 @@ runtime markers, or target-owned URL filtering changes.
 - Hunt breadcrumb write failure -> preserve the old session and emit the existing
   non-fatal warning; do not suppress diagnostics or change phase execution results.
 - Different target or different phase -> locks do not conflict.
+- Recon reaching normal end with an actual incomplete phase/collector returns 75;
+  Hunt and direct runtime wrappers retain their existing failed breadcrumbs, and
+  batch targets remain pending. Optional missing tools and advisory derived caches
+  keep their phase receipts without requesting an automatic full Recon restart.
+- `test_runtime_state.test_local_collection_preserves_unrepaired_collector_failure`
+  fixes gau error → local success → skipped/unavailable → real success: only the
+  last clears the failure; stale clean review cannot claim exhaustion beforehand.
 - Direct scanner URL/bare-host/missing-manifest inputs all reach admission when
   unlocked; real same-target scan contention returns `75` before scanner artifacts.
   An empty recon fixture reaches the explicit no-live-host error without network I/O.
@@ -816,8 +885,11 @@ runtime markers, or target-owned URL filtering changes.
   even if handoff files exist; a marker with a released lock is not a wait.
 - Completed domains available -> `next_action=select_completed_domain`; candidates
   must be a subset of completed domains.
-- Empty current list -> `invalid_batch_target`; all current entries failed with no
-  pending target -> `batch_failed`; neither automatically retries recon.
+- Empty current list -> `invalid_batch_target`. Failed entries remain pending for
+  a later bounded `run_batch_recon`; untried inputs precede retries, which rotate
+  by last attempt using shared `recon_target_selector.batch_progress`. Successful
+  domains remain available for immediate selection. Legacy `batch_failed` state
+  is still recognized by terminal-state consumers.
 - Rewritten list input filters old completed/failed/pending/candidate artifacts;
   only current entries may reach completed-domain handoff.
 - Missing/invalid batch JSONL or score -> ignore the invalid record/score and keep
@@ -919,20 +991,21 @@ readability revision.
 ### 2. Signatures
 
 - Keep command frontmatter, critical manifest and exact dynamic Bootstrap lines.
-- `commands/autopilot.md#shared-automation` owns restore/continue/execute/refresh
+- `skills/autopilot-protocol.md#shared-automation` owns restore/continue/execute/refresh
   timing and stopping. Keep its `state-consumption-loop` and `investigation-skill`
   anchors; Round and Bootstrap consume the former paths.
 - `skills/runtime-protocol.md#native-skill-loading` owns body loading/reuse/recovery.
   `commands/checkpoint.md#global-review` owns review scope and snapshot submission.
-- `commands/autopilot-round.md` retains prepare, claim, heartbeat, correction,
+- `skills/autopilot-round-protocol.md` retains prepare, claim, heartbeat, correction,
   settle/status and exact native-loop cleanup. Ordinary Autopilot reads it only
   to recover existing Round obligations; it does not start a Round implicitly.
 
 ### 3. Contracts
 
 - Keep the main command near upstream scale (about 4–6 KiB including wiring).
-  Delete duplicated explanations; leave a clear trigger pointing to the existing
-  complete owner. Do not move an expanded controller into a new mandatory manual.
+  Delete duplicated explanations; keep the original complete body in its installed
+  protocol resource and deliver it automatically. Do not add expanded controller
+  prose or require a second manual read of already delivered content.
 - Measure the command, shared owners, resident imports and conditional sections
   separately. Remove duplicate prose; a required execution/recovery example may
   grow its on-demand owner document. Report comparable static startup/action/finish
@@ -974,6 +1047,8 @@ readability revision.
 
 - Changed Bootstrap line/manifest/frontmatter -> native entry wiring may break.
 - Missing Shared Automation body/anchor -> Round or Bootstrap loses instructions.
+- Malformed applicable command frontmatter or missing compatibility heading ->
+  capture/SessionStart/Refresh still fail after moving its body to a protocol resource.
 - Native Skill body absent or circular reference -> restore from its shared owner.
 - Missing owner section -> cannot treat a link as preserved behavior.
 - Failed/missing state -> recover; do not act on stale control.
@@ -993,6 +1068,11 @@ readability revision.
 - One isolated focused check: real parser-backed usage, exact release wiring,
   complete Round shared-section consumption, incoming/outgoing links, actual lane
   extraction, preserved method bytes and composed reading measurements.
+- `11-09-autopilot-entry-single-delivery/research/check_entry_delivery.py` under
+  `.trellis/tasks/` checks exact moved bodies, actual staged body CLI, compact/restart,
+  changed sources, both command/protocol corruption and critical installed resources.
+  Refresh owner acquisition is explicitly stubbed; token estimates exclude Bootstrap
+  JSON. Full receiver/model adherence and real request billing remain unverified.
 - Review normal, blocked, compaction, pending-Round, validation/publication and
   finish paths for retained obligations. Static checks do not establish Claude behavior.
 - Historical document-shape assertions need separate review; this 2026-10-22 scope
@@ -1000,8 +1080,9 @@ readability revision.
 
 ### 7. Wrong vs Correct
 
-Wrong: expanding every exception into the command, then hiding that body behind
-a mandatory link to claim a smaller entry.
+Wrong: duplicate a full command suffix in its dynamic output, or replace required
+body context with a link. Correct: automatically deliver the complete protocol once,
+retain entry gates and source validation, and measure the composed input.
 
 Correct: keep automation timing in the entry, full methods with src-hunter,
 shared loading/write-back with runtime-protocol and review details with Checkpoint.

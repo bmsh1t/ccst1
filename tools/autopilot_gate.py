@@ -926,7 +926,7 @@ def _describe_next_step(state: dict) -> str:
     if recovery and not hard_gate:
         return (
             str(recovery["action"])
-            + "; apply commands/autopilot-round.md to existing round work before new investigation."
+            + "; apply skills/autopilot-round-protocol.md to existing round work before new investigation."
         )
     if state.get("selection_mode") == "ai_priority" and not hard_gate:
         return (
@@ -958,7 +958,7 @@ def _describe_next_step(state: dict) -> str:
             "Apply the complete src-hunter body under skills/runtime-protocol.md#native-skill-loading first. "
             "Usable request/source/browser evidence already supplied for this target "
             "may replace this initial default. After Recon, refresh state and continue "
-            "investigation under commands/autopilot.md#shared-automation."
+            "investigation under skills/autopilot-protocol.md#shared-automation."
         )
     if action == "wait_recon":
         return (
@@ -1141,7 +1141,7 @@ def _describe_next_step(state: dict) -> str:
         return f"refresh recon before going deeper on {target}."
     if action in {"continue_investigation", "handoff"}:
         return (
-            "Continue under commands/autopilot.md#shared-automation in this session. "
+            "Continue under skills/autopilot-protocol.md#shared-automation in this session. "
             "Apply the complete delivered src-hunter body; restore missing host context before new work. "
             "Recover work or choose a complete method from current evidence within the bound Scope. "
             "Collect missing material when the next question requires it. "

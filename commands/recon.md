@@ -6,7 +6,7 @@ description: Run the local recon pipeline on a target — domain/IP/CIDR or prim
 
 Run the production recon pipeline. Do not re-implement the methodology inline.
 
-Invoking `/recon` explicitly selects the existing complete profile pipeline.
+Invoking `/recon` selects the profile pipeline, or one explicit `--recon-collect` batch.
 Ordinary `src-hunter` investigation does not invoke it merely because inventory is
 missing, has zero live hosts, or retains collection pages. `--recon-only` skips
 scanner; it is not a per-phase switch. No `--phase` or `--ffuf-rotation-only` exists.
@@ -98,6 +98,40 @@ Partial collection retains usable material and unknowns; it is not a target-wide
 blocker. Only the parent's Finish Contract permits stopping. Standalone `/recon`
 still reports its own collection result without starting an autonomous hunt.
 
+## Deep collection batches
+
+Deep retains depth-3 Katana with JS/known-file discovery, but selects at most 5
+seeds per invocation. Integrated deep FFUF selects at most 5 targets and 512
+wordlist lines per target. Successful word pages advance the existing ledger;
+the target completes only after its last page. Failed pages retry as a unit.
+Quick/normal/full retain their existing default selection sizes and wordlists.
+
+After reviewing the current material, select another batch only when it helps
+the investigation. With an existing single-target live inventory, reuse the same
+target and auth/context through either local collector:
+
+```bash
+python3 tools/hunt.py --target target.com --recon-only --deep --recon-collect katana
+python3 tools/hunt.py --target target.com --recon-only --deep --recon-collect ffuf
+# Equivalent direct entry, with the existing runtime lock:
+bash tools/recon_engine.sh target.com --deep --collect katana
+```
+
+These calls skip other active collectors and preserve live/JS evidence. They
+publish the selected collector's results and refresh derived views before
+returning. Batch-list/CIDR inputs and other profiles reject local collection.
+The initial deep invocation still runs the profile's other phases; this is not a
+streaming stage scheduler. Katana may still take its 300-second timeout on a
+complex seed, and slow FFUF pages may still time out under the existing budget.
+
+`dir_fuzz_rotation.words_completed/words_remaining` describe dictionary positions,
+not tested vulnerability coverage. The latest FFUF summary describes this batch;
+previous raw results/summaries remain in `history/collectors/`. Remaining seeds
+or words are advisory: choose continuation, focused discovery, browser/source
+investigation or an explicit disposition from evidence; do not loop whole Recon
+merely to empty these counters. While collection runs, independent work remains
+allowed under Return To Autopilot.
+
 ## AI-selected DNS expansion
 
 DNS permutation/brute force is not a default Recon phase. After passive Recon,
@@ -174,11 +208,14 @@ For a path template, use an isolated run and the existing adapter:
 RUN_DIR='recon/<target_key>/focused_fuzz/<run_id>'
 mkdir -p "$RUN_DIR/dirs"
 set -o pipefail
-if ffuf -u 'https://target.com/api/v2/FUZZ' \
-  -w "$RUN_DIR/wordlist.txt" \
+if timeout --kill-after=2 120 ffuf -u 'https://target.com/api/v2/FUZZ' \
+  -w - \
   -H 'Authorization: Bearer <token>' -b 'session=<cookie>' \
-  -mc all -ac -t 5 -timeout 10 -s -json 2> "$RUN_DIR/ffuf.log" \
-  | gzip -c > "$RUN_DIR/dirs/ffuf_results.jsonl.gz"; then
+  -mc all -t 5 -rate 20 -timeout 10 -s -json -noninteractive \
+  < "$RUN_DIR/wordlist.txt" 2> "$RUN_DIR/ffuf.log" \
+  | gzip -c > "$RUN_DIR/dirs/ffuf_results.jsonl.gz" &&
+  python3 tools/recon_adapter.py --recon-dir "$RUN_DIR" --check-ffuf-run \
+    --results "$RUN_DIR/dirs/ffuf_results.jsonl.gz" --wordlist "$RUN_DIR/wordlist.txt"; then
   RUN_COUNTS=(--attempted 1 --succeeded 1)
 else
   RUN_COUNTS=(--attempted 1 --failed 1)
@@ -192,26 +229,34 @@ one changed boundary per run and use an observed prefix rather than a generic
 management dictionary:
 
 ```bash
-ffuf -u 'https://target.com/FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
-ffuf -u 'https://target.com/api/v2/items?view=FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
-ffuf -u 'https://target.com/api/v2/items' -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"FUZZ"}' -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
-ffuf -u 'https://target.com/api/v2/items' -H 'X-API-Version: FUZZ' \
-  -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
+FFUF_ARGS=(-w - -mc all -t 3 -rate 20 -timeout 10 -s -json -noninteractive)
+timeout --kill-after=2 120 ffuf -u 'https://target.com/FUZZ' "${FFUF_ARGS[@]}" < "$RUN_DIR/wordlist.txt"
+timeout --kill-after=2 120 ffuf -u 'https://target.com/api/v2/items?view=FUZZ' "${FFUF_ARGS[@]}" < "$RUN_DIR/wordlist.txt"
+timeout --kill-after=2 120 ffuf -u 'https://target.com/api/v2/items' -X POST -H 'Content-Type: application/json' \
+  -d '{"action":"FUZZ"}' "${FFUF_ARGS[@]}" < "$RUN_DIR/wordlist.txt"
+timeout --kill-after=2 120 ffuf -u 'https://target.com/api/v2/items' -H 'X-API-Version: FUZZ' \
+  "${FFUF_ARGS[@]}" < "$RUN_DIR/wordlist.txt"
 ```
+
+These are alternative templates: use the capture/check pattern above for the
+one selected run, with its actual auth and request budget.
 
 For a captured request, remove unrelated values and keep one explicit `FUZZ`
 slot:
 
 ```bash
-ffuf -request "$RUN_DIR/request.txt" -request-proto https \
-  -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3 -timeout 10 -s -json \
+timeout --kill-after=2 120 ffuf -request "$RUN_DIR/request.txt" -request-proto https \
+  "${FFUF_ARGS[@]}" < "$RUN_DIR/wordlist.txt" \
   2> "$RUN_DIR/ffuf.log" | gzip -c > "$RUN_DIR/dirs/ffuf_results.jsonl.gz"
 ```
 
-Retain `-ac`; add `-fc 404` or `-fs <control-size>` only when a control supports
-it. Read observations through the existing bounded adapter rather than copying
-the result set:
+Keep unfiltered `-mc all` for complete word-page receipts. `-ac` adds calibration
+requests and filters output; it does not reduce the main dictionary requests.
+Use it or `-fc`/`-fs` only for a separately chosen, control-backed exploratory run;
+filtered output cannot prove every word completed. `-maxtime` can exit zero before
+all words run, so retain the response/input check. `-json` emits JSONL; `-of json`
+is a different file format. `-w -` avoids interpreting colons in paths as keyword
+separators. Read observations through the existing bounded adapter:
 
 ```bash
 python3 tools/recon_adapter.py --recon-dir "$RUN_DIR" \

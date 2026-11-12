@@ -221,8 +221,29 @@ def stop_check(binding: dict, state: dict, closure: dict, event: dict) -> dict:
         from tools.autopilot_gate import describe_next_step
         reason = describe_next_step(state)
     elif not bound_review:
-        reason = ("Continue worthwhile investigation. Before a justified stop, read fresh Closure and record an existing "
-                  "Checkpoint global review with termination bound to this session/invocation; a handoff or report is not a stop reason.")
+        if closure.get("snapshot_stale"):
+            detail = "snapshot_stale: owners changed during Closure acquisition; run the current host state command first."
+        elif not review or review.get("status") == "missing":
+            detail = "review_missing: no current Global Review is recorded."
+        elif review.get("status") == "stale":
+            detail = "review_stale: the recorded Global Review no longer matches current owner facts."
+        elif not reviewed_stop:
+            if review.get("status") == "follow_up" or review.get("review_status") == "follow_up":
+                detail = "review_follow_up: complete or reassess the recorded next_action before submitting a stopping review."
+            elif review.get("status") == "form_insufficient":
+                detail = "review_incomplete: review global_review.missing_tokens and retain each residual and reopening condition."
+            else:
+                detail = "review_invalid: correct the review using the existing Checkpoint field/evidence diagnostics."
+        elif not termination:
+            detail = "termination_missing: the complete review has no stopping attestation for this invocation."
+        else:
+            detail = "termination_mismatch: the review belongs to another session or invocation; use the current Host binding."
+        closure_command = shlex.join(["python3", str(REPO_ROOT / "tools/autopilot_state.py"),
+            "--repo-root", str(REPO_ROOT), "--target", binding["target"], "--bounded", "--closure", "--projection-only", "--json"])
+        reason = (detail + " For a justified stop, finish result collection/write-back, then read fresh Closure:\n"
+                  + closure_command + "\nApply commands/checkpoint.md#global-review and submit an evidence-backed "
+                  "complete review with --termination-json bound to the current host.session_id/invocation_id; "
+                  "reread Closure before ending. The agent still judges whether stopping is justified.")
     elif termination["reason"] == "explicit_limit" and not _explicit_limit_reached(binding, termination, round_progress):
         reason = ("The submitted explicit limit has not been reached or does not match this invocation's admitted time/Round limit. "
                   "Keep the actual user/host threshold and continue useful work; estimated usage or a saved handoff cannot end it.")
@@ -235,7 +256,37 @@ def stop_check(binding: dict, state: dict, closure: dict, event: dict) -> dict:
     return {"allow": False, "reason": reason, "basis": json_digest({
         "components": closure.get("snapshot_components"), "reason": reason,
         "tasks": host_tasks, "termination": termination,
+        "review": {"status": review.get("status"), "review_status": review.get("review_status"),
+                   "missing_tokens": sorted(set(review.get("missing_tokens") or [])),
+                   "has_residuals": bool(review.get("residual_unknowns"))},
+        "snapshot_stale": bool(closure.get("snapshot_stale")),
     })}
+
+
+def _is_task_notification(prompt: str) -> bool:
+    envelope = re.fullmatch(
+        r"<task-notification>\s*<task-id>[A-Za-z0-9_-]+</task-id>\s*"
+        r"(?:<tool-use-id>[A-Za-z0-9_-]+</tool-use-id>\s*)?"
+        r"<output-file>[^<>\r\n]+</output-file>\s*"
+        r"<status>(?:completed|failed|killed)</status>\s*"
+        r"<summary>([\s\S]*)</task-notification>", prompt,
+    )
+    if not envelope:
+        return False
+    order = ("summary", "note", "result", "usage")
+    opened = {"summary"}
+    # Track possible fields in one scan; opaque payload tags must not cause backtracking.
+    for boundary in re.finditer(
+        r"</(summary|note|result|usage)>\s*(?:<(note|result|usage)>|$)", envelope[1]
+    ):
+        closed, following = boundary.groups()
+        if closed not in opened:
+            continue
+        if following is None:
+            return True
+        if order.index(following) > order.index(closed):
+            opened.add(following)
+    return False
 
 
 def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -> dict:
@@ -257,14 +308,8 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
         completed = binding.get("status") == "completed" and bool(binding.get("invocation_id"))
         if event == "UserPromptSubmit":
             prompt = str(data.get("prompt") or "").strip()
-            # Claude also emits this hook for its reserved background-result envelope.
-            if re.fullmatch(
-                r"<task-notification>\s*<task-id>[A-Za-z0-9_-]+</task-id>\s*"
-                r"(?:<tool-use-id>[A-Za-z0-9_-]+</tool-use-id>\s*)?"
-                r"<output-file>[^<>\r\n]+</output-file>\s*"
-                r"<status>(?:completed|failed|killed)</status>\s*"
-                r"<summary>[\s\S]*</summary>\s*</task-notification>", prompt
-            ):
+            # Claude emits this hook for reserved result envelopes with opaque payloads.
+            if _is_task_notification(prompt):
                 return {}
             binding.update(contract_sha256=contract_sha256, prompt_id=uuid.uuid4().hex)
             if prompt.split(maxsplit=1)[0:1] in (["/autopilot"], ["/autopilot-round"]):
@@ -350,7 +395,8 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
             binding["status"] = "suspended"
             write_json_atomic(path, binding)
             return {"continue": False, "stopReason": "CCST_AUTOPILOT_INCOMPLETE: "
-                    + (decision["reason"] if batch_blocked else "repeated normal stop without owner progress.")
+                    + ("" if batch_blocked else "Repeated Stop with unchanged owner/review requirements. ")
+                    + decision["reason"]
                     + " Automation is suspended; retained evidence is not completion. " + _state_command(runtime, binding)}
         binding["last_stop_basis"] = decision["basis"]
         write_json_atomic(path, binding)

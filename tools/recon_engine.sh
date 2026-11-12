@@ -2,7 +2,7 @@
 # =============================================================================
 # Enhanced Recon Engine
 # Full reconnaissance pipeline for target-driven penetration testing
-# Usage: ./recon_engine.sh <target-domain|ip|cidr|list-file> [--quick|--normal|--deep|--full]
+# Usage: ./recon_engine.sh <target> [--quick|--normal|--deep|--full] [--collect katana|ffuf]
 # =============================================================================
 
 set -euo pipefail
@@ -52,8 +52,10 @@ record_recon_phase() {
     local count="${4:-0}"
     local note="${5:-}"
 
-    case "$status" in
-        partial|error|failed|incomplete) RECON_PHASE_PARTIAL=1 ;;
+    case "$phase:$status" in
+        # These derived observations are explicitly advisory; keep their own receipts.
+        route_kind_observation:*|surface_finalize:*) ;;
+        *:partial|*:error|*:failed|*:incomplete) RECON_PHASE_PARTIAL=1 ;;
     esac
 
     # Manifest 是阶段账本，不做价值判断；用于让 Claude 区分“无结果”和“未运行/跳过”。
@@ -70,6 +72,10 @@ record_recon_collector() {
     local count="$4"
     local duration="$5"
     local note="${6:-}"
+
+    case "$status" in
+        partial|error|failed|incomplete) RECON_PHASE_PARTIAL=1 ;;
+    esac
 
     [ -n "${RECON_MANIFEST:-}" ] || return 0
     python3 "$BASE_DIR/tools/recon_gate.py" --repo-root "$BASE_DIR" --target "$TARGET" \
@@ -154,7 +160,6 @@ sync_observation_inventory() {
         log_done "Observation index synced after ${source_stage}"
     else
         status="partial"
-        RECON_PHASE_PARTIAL=1
         log_warn "Observation index sync failed after ${source_stage}; raw artifacts remain available"
     fi
     record_recon_phase \
@@ -209,7 +214,20 @@ run_with_timeout() {
     local timeout_cmd
     timeout_cmd="$(timeout_bin)"
     if [ -n "$timeout_cmd" ]; then
-        "$timeout_cmd" "$limit" "$@"
+        (
+            local timeout_pid=""
+            trap 'exit 143' TERM
+            trap 'exit 130' INT
+            trap 'if [ -n "$timeout_pid" ]; then
+                kill -TERM "$timeout_pid" 2>/dev/null || true
+                wait "$timeout_pid" 2>/dev/null || true
+                kill -KILL -- "-$timeout_pid" 2>/dev/null || true
+            fi' EXIT
+            # Keep timeout's child group and stdin; the caller owns this local trap.
+            "$timeout_cmd" --kill-after=2 "$limit" "$@" <&0 &
+            timeout_pid=$!
+            wait "$timeout_pid"
+        )
     else
         "$@"
     fi
@@ -259,7 +277,7 @@ publish_raw_url_archive() {
     # Raw URL evidence is append-only across runs. Keep current staging
     # separate from Active views so historical URLs remain queryable without
     # widening the default scanner input.
-    if ! { append_artifact "$archive"; cat "$staging"; } \
+    if ! { append_artifact "$archive" && cat "$staging"; } \
         | awk 'NF && !seen[$0]++' > "$merged"; then
         rm -f "$merged"
         return 1
@@ -310,18 +328,15 @@ require_nonnegative_integer() {
 }
 
 aggregate_optional_status() {
-    local status any_ok=0 any_missing=0
+    local status any_ok=0
     for status in "$@"; do
         case "$status" in
-            error|partial) printf 'partial\n'; return 0 ;;
+            error|partial|failed|incomplete) printf 'partial\n'; return 0 ;;
             ok) any_ok=1 ;;
-            missing|unavailable|skipped) any_missing=1 ;;
         esac
     done
-    if [ "$any_ok" -eq 1 ] && [ "$any_missing" -eq 0 ]; then
+    if [ "$any_ok" -eq 1 ]; then
         printf 'ok\n'
-    elif [ "$any_ok" -eq 1 ]; then
-        printf 'partial\n'
     else
         printf 'unavailable\n'
     fi
@@ -351,7 +366,7 @@ append_artifact() {
     if [ -s "$artifact" ]; then
         cat "$artifact"
     elif [ -s "${artifact}.gz" ]; then
-        gzip -cd "${artifact}.gz" 2>/dev/null || true
+        gzip -cd "${artifact}.gz"
     fi
 }
 
@@ -419,7 +434,7 @@ run_collector_task() {
     local artifact="$1"
     local meta_file="$2"
     shift 2
-    local started rc status note duration temp_artifact merged_artifact
+    local started rc status note duration temp_artifact publish_artifact
     started=$(date +%s)
     mkdir -p "$(dirname "$artifact")" "$(dirname "$meta_file")"
     temp_artifact="$(mktemp "$(dirname "$artifact")/.${artifact##*/}.collector.XXXXXX")"
@@ -431,21 +446,6 @@ run_collector_task() {
 
     case "$rc" in
         0)
-            if ! archive_collector_artifact "$artifact"; then
-                rm -f "$temp_artifact"
-                status="error"
-                note="could not archive prior artifact; current result not published"
-                printf '%s\t%s\t%s\n' "$status" "$duration" "$note" > "$meta_file"
-                return 0
-            fi
-            if [ "$artifact" = "$RECON_DIR/urls/katana.txt" ]; then
-                merged_artifact="${temp_artifact}.merged"
-                { append_artifact "$artifact"; cat "$temp_artifact"; } \
-                    | awk 'NF && !seen[$0]++' > "$merged_artifact"
-                mv -f "$merged_artifact" "$temp_artifact"
-            fi
-            mv -f "$temp_artifact" "$artifact"
-            rm -f "${artifact}.gz"
             status="ok"
             note=""
             ;;
@@ -468,21 +468,11 @@ run_collector_task() {
             note="optional collector credential unavailable; prior artifact preserved"
             ;;
         124)
-            merged_artifact="${temp_artifact}.merged"
-            { append_artifact "$artifact"; cat "$temp_artifact"; } \
-                | awk 'NF && !seen[$0]++' > "$merged_artifact"
-            mv -f "$merged_artifact" "$artifact"
-            rm -f "$temp_artifact" "${artifact}.gz"
             status="partial"
             note="collector timed out; prior and partial artifacts preserved"
             ;;
         *)
             if [ -s "$temp_artifact" ]; then
-                merged_artifact="${temp_artifact}.merged"
-                { append_artifact "$artifact"; cat "$temp_artifact"; } \
-                    | awk 'NF && !seen[$0]++' > "$merged_artifact"
-                mv -f "$merged_artifact" "$artifact"
-                rm -f "$temp_artifact" "${artifact}.gz"
                 status="partial"
                 note="collector exited $rc; prior and partial artifacts preserved"
             else
@@ -493,6 +483,30 @@ run_collector_task() {
             fi
             ;;
     esac
+    if [ "$status" = "ok" ] && ! archive_collector_artifact "$artifact"; then
+        status="error"
+        note="could not archive prior artifact; current result preserved at $temp_artifact"
+    fi
+    if [ "$status" = "ok" ] || [ "$status" = "partial" ]; then
+        publish_artifact="$temp_artifact"
+        if [ "$status" = "partial" ] || [ "$artifact" = "$RECON_DIR/urls/katana.txt" ]; then
+            publish_artifact="${temp_artifact}.merged"
+            if ! { append_artifact "$artifact" && cat "$temp_artifact"; } \
+                | awk 'NF && !seen[$0]++' > "$publish_artifact"; then
+                status="error"
+                note="merge failed; current result preserved at $temp_artifact"
+                rm -f "$publish_artifact"
+            fi
+        fi
+        if [ "$status" != "error" ]; then
+            if mv -f "$publish_artifact" "$artifact"; then
+                rm -f "$temp_artifact" "${artifact}.gz"
+            else
+                status="error"
+                note="publication failed; current result preserved at $temp_artifact"
+            fi
+        fi
+    fi
     printf '%s\t%s\t%s\n' "$status" "$duration" "$note" > "$meta_file"
 }
 
@@ -871,6 +885,17 @@ PY
 
 TARGET="${1:?Usage: $0 <target-domain|ip|cidr|list-file> [--quick|--normal|--deep|--full]}"
 RECON_MODE_FLAG="${2:-}"
+RECON_COLLECT=""
+RECON_EXTRA_ARGS=()
+if [ "$#" -gt 2 ]; then
+    case "${3:-}:${4:-}:$#" in
+        --collect:katana:4|--collect:ffuf:4)
+            RECON_COLLECT="$4"
+            RECON_EXTRA_ARGS=(--collect "$RECON_COLLECT")
+            ;;
+        *) log_err "Expected --collect katana|ffuf after the profile"; exit 2 ;;
+    esac
+fi
 case "$RECON_MODE_FLAG" in
     ""|--full)
         RECON_PROFILE="full"
@@ -893,6 +918,10 @@ case "$RECON_MODE_FLAG" in
         exit 2
         ;;
 esac
+if [ -n "$RECON_COLLECT" ] && [ "$RECON_PROFILE" != "deep" ]; then
+    log_err "--collect requires --deep and an existing single-target live inventory"
+    exit 2
+fi
 AMASS_ENABLED=0
 if [ "$RECON_PROFILE" != "quick" ] && env_truthy "${BBHUNT_ENABLE_AMASS:-0}"; then
     AMASS_ENABLED=1
@@ -923,7 +952,7 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "recon" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$TARGET" ]; then
     exec python3 "$BASE_DIR/tools/runtime_phase_exec.py" \
         --repo-root "$BASE_DIR" --target "$TARGET" --phase recon -- \
-        bash "$SCRIPT_PATH" "$TARGET" "$RECON_MODE_FLAG"
+        bash "$SCRIPT_PATH" "$TARGET" "$RECON_MODE_FLAG" "${RECON_EXTRA_ARGS[@]}"
 fi
 # 与 Osmedeus 01-osint.yaml 的 `toolsDir` 对齐：默认共用 $HOME/Tools。
 # 可用 BBHUNT_TOOLS_DIR 或 OSMEDEUS_TOOLS_DIR 显式覆盖，便于多套工具目录共存。
@@ -941,13 +970,31 @@ trap 'exit 130' INT
 # Prefer Go-installed/security-tool bins over similarly named package-manager CLIs.
 export PATH="$HOME/.local/bin:$HOME/go/bin:$SHARED_TOOLS_DIR/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+refresh_batch_progress() {
+    python3 - "$BASE_DIR" "$1" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from tools.artifact_io import write_text_atomic
+from tools.recon_target_selector import batch_progress
+
+batch_dir = Path(sys.argv[2])
+names = ("completed_targets.txt", "failed_targets.txt", "pending_targets.txt")
+inputs = [(batch_dir / name).read_text(encoding="utf-8").splitlines()
+          for name in ("batch_targets.txt", *names[:2])]
+for name, values in zip(names, batch_progress(*inputs)):
+    write_text_atomic(batch_dir / name, "".join(value + "\n" for value in values))
+PY
+}
+
 run_domain_list_batch() {
     local list_file="$1"
     local mode_flag="${2:-}"
     local batch_name batch_key batch_dir targets_file manifest completed_file failed_file summary_file
     local scope_metadata_file scope_hash
     local inventory_file inventory_text_file ai_handoff_file target_links_file
-    local pending_file run_targets_file processed_file batch_size_raw batch_size batch_reset chunk_mode
+    local pending_file run_targets_file batch_size_raw batch_size batch_reset chunk_mode
     batch_name="$(basename "$list_file")"
     batch_key="$(python3 - "$list_file" "$BASE_DIR" <<'PY'
 import sys
@@ -977,7 +1024,6 @@ PY
     scope_metadata_file="$batch_dir/scope_context.json"
     pending_file="$batch_dir/pending_targets.txt"
     run_targets_file="$batch_dir/current_batch_targets.txt"
-    processed_file="$batch_dir/.processed_targets.tmp"
 
     batch_size_raw="${BBHUNT_BATCH_SIZE:-0}"
     batch_size=0
@@ -1082,13 +1128,10 @@ PY
         return 1
     fi
 
+    refresh_batch_progress "$batch_dir" || return $?
     if [ "$chunk_mode" -eq 1 ]; then
-        cat "$completed_file" "$failed_file" 2>/dev/null \
-            | awk 'NF && !seen[$0]++' > "$processed_file" || true
-        grep -Fvx -f "$processed_file" "$targets_file" > "$pending_file" 2>/dev/null || true
-        head -n "$batch_size" "$pending_file" > "$run_targets_file" 2>/dev/null || true
+        head -n "$batch_size" "$pending_file" > "$run_targets_file" || return $?
     else
-        cp "$targets_file" "$pending_file"
         cp "$targets_file" "$run_targets_file"
     fi
 
@@ -1176,11 +1219,12 @@ with open(manifest, "a", encoding="utf-8") as handle:
 PY
     done < "$run_targets_file"
 
+    refresh_batch_progress "$batch_dir" || return $?
     local completed_total failed_total processed_this_run remaining_total batch_size_label
     completed_total=$(wc -l < "$completed_file" 2>/dev/null | tr -d ' ' || echo 0)
     failed_total=$(wc -l < "$failed_file" 2>/dev/null | tr -d ' ' || echo 0)
     processed_this_run=$((ok_count + fail_count))
-    remaining_total=$((total - completed_total - failed_total))
+    remaining_total=$((total - completed_total))
     [ "$remaining_total" -lt 0 ] && remaining_total=0
     batch_size_label="full"
     [ "$chunk_mode" -eq 1 ] && batch_size_label="$batch_size"
@@ -1318,6 +1362,10 @@ PY
 }
 
 if [ -f "$TARGET" ] && [ -r "$TARGET" ]; then
+    if [ -n "$RECON_COLLECT" ]; then
+        log_err "--collect requires a single target, not a batch list"
+        exit 2
+    fi
     run_domain_list_batch "$TARGET" "$RECON_MODE_FLAG"
     exit $?
 fi
@@ -1415,6 +1463,10 @@ print(target_storage_key(target))
 PY
 )"
 RECON_DIR="$BASE_DIR/recon/$RECON_TARGET_KEY"
+if [ -n "$RECON_COLLECT" ] && { [ "$TARGET_KIND" = "cidr" ] || [ ! -s "$RECON_DIR/live/urls.txt" ]; }; then
+    log_err "--collect requires an existing live URL inventory for a domain, URL or IP"
+    exit 2
+fi
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RAW_URL_DIR="$RECON_DIR/urls/raw"
 RAW_URLS_STAGING="$RAW_URL_DIR/.all.${TIMESTAMP}.txt"
@@ -1449,14 +1501,14 @@ PORT_HISTORY_FILE="$RECON_DIR/ports/history/open_host_ports.txt"
 ORIGIN_HISTORY_FILE="$RECON_DIR/live/history/origin_candidates.txt"
 mkdir -p "$(dirname "$PORT_HISTORY_FILE")" "$(dirname "$ORIGIN_HISTORY_FILE")"
 if [ -s "$RECON_DIR/ports/open_host_ports.txt" ]; then
-    { append_artifact "$PORT_HISTORY_FILE"; append_artifact "$RECON_DIR/ports/open_host_ports.txt"; } \
+    { append_artifact "$PORT_HISTORY_FILE" && append_artifact "$RECON_DIR/ports/open_host_ports.txt"; } \
         | awk 'NF && !seen[$0]++' > "${PORT_HISTORY_FILE}.tmp" \
-        && mv -f "${PORT_HISTORY_FILE}.tmp" "$PORT_HISTORY_FILE"
+        && mv -f "${PORT_HISTORY_FILE}.tmp" "$PORT_HISTORY_FILE" || exit 1
 fi
 if [ -s "$RECON_DIR/live/origin_candidates.txt" ]; then
-    { append_artifact "$ORIGIN_HISTORY_FILE"; append_artifact "$RECON_DIR/live/origin_candidates.txt"; } \
+    { append_artifact "$ORIGIN_HISTORY_FILE" && append_artifact "$RECON_DIR/live/origin_candidates.txt"; } \
         | awk 'NF && !seen[$0]++' > "${ORIGIN_HISTORY_FILE}.tmp" \
-        && mv -f "${ORIGIN_HISTORY_FILE}.tmp" "$ORIGIN_HISTORY_FILE"
+        && mv -f "${ORIGIN_HISTORY_FILE}.tmp" "$ORIGIN_HISTORY_FILE" || exit 1
 fi
 touch "$RECON_DIR/urls/port_candidates.txt"
 RECON_MANIFEST="$RECON_DIR/recon_manifest.jsonl"
@@ -1470,7 +1522,9 @@ if [ "$TARGET_KIND" = "cidr" ]; then
     mkdir -p "$RECON_DIR/live/cidr_pages"
 fi
 
-if [ "$TARGET_KIND" != "cidr" ]; then
+if [ -n "$RECON_COLLECT" ]; then
+    touch "$RECON_MANIFEST"
+elif [ "$TARGET_KIND" != "cidr" ]; then
     : > "$RECON_MANIFEST"
     touch "$RECON_DIR/live/httpx_full.txt"
 elif [ "$CIDR_OFFSET" -eq 0 ]; then
@@ -1480,7 +1534,7 @@ elif [ "$CIDR_OFFSET" -eq 0 ]; then
 else
     touch "$RECON_MANIFEST" "$RECON_DIR/live/httpx_full.txt"
 fi
-: > "$DISCOVERY_HOSTS_FILE"
+[ -n "$RECON_COLLECT" ] || : > "$DISCOVERY_HOSTS_FILE"
 
 # Pre-seed result files that summary blocks read via `< file`. Without these,
 # ip/cidr branches that skip subdomain/WAF/origin work cause bash redirection
@@ -1516,6 +1570,7 @@ touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/exposure/asset_relation_candidates.jsonl"
 
 # Clear regenerated summary files so reruns cannot inherit stale counters.
+if [ -z "$RECON_COLLECT" ]; then
 : > "$RECON_DIR/live/urls.txt"
 : > "$RECON_DIR/live/seed_urls.txt"
 # WAF summaries are replaced by their fingerprint-bound publisher after it reads
@@ -1540,6 +1595,7 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/js/potential_secrets.txt"
 : > "$RECON_DIR/js/linkfinder_endpoints.txt"
 : > "$RECON_DIR/js/request_targets.txt"
+fi
 # Routing candidates are rebuildable projections. recon_candidates.py publishes
 # each file atomically, so retain the last usable generation until a complete
 # rebuild succeeds; a failed rebuild is reported by the phase as partial.
@@ -1765,6 +1821,7 @@ record_recon_phase \
 # ============================================================
 # Phase 1: Subdomain Enumeration
 # ============================================================
+if [ -z "$RECON_COLLECT" ]; then
 recon_budget_checkpoint subdomain_enum
 log_info "Phase 1: Subdomain Enumeration"
 
@@ -1887,10 +1944,10 @@ PY
     fi
     record_recon_phase \
         cidr_seed \
-        "$CIDR_STATUS" \
+        ok \
         "recon/${RECON_TARGET_KEY}/live/discovery_hosts.txt" \
         "$CIDR_COUNT" \
-        "limit=$CIDR_LIMIT; offset=$CIDR_OFFSET; total=$CIDR_TOTAL; remaining=$CIDR_REMAINING; continuation=recon/${RECON_TARGET_KEY}/live/cidr_continuation.json"
+        "current page generated; limit=$CIDR_LIMIT; offset=$CIDR_OFFSET; total=$CIDR_TOTAL; remaining=$CIDR_REMAINING; continuation=recon/${RECON_TARGET_KEY}/live/cidr_continuation.json"
     emit_claude_hint \
         phase                cidr_seed \
         status               "$CIDR_STATUS" \
@@ -2595,9 +2652,9 @@ else
 fi
 
 if [ -s "$ORIGIN_HISTORY_FILE" ]; then
-    { append_artifact "$ORIGIN_HISTORY_FILE"; append_artifact "$RECON_DIR/live/origin_candidates.txt"; } \
+    { append_artifact "$ORIGIN_HISTORY_FILE" && append_artifact "$RECON_DIR/live/origin_candidates.txt"; } \
         | awk 'NF && !seen[$0]++' > "${RECON_DIR}/live/.origin_candidates.merge.tmp" \
-        && mv -f "${RECON_DIR}/live/.origin_candidates.merge.tmp" "$RECON_DIR/live/origin_candidates.txt"
+        && mv -f "${RECON_DIR}/live/.origin_candidates.merge.tmp" "$RECON_DIR/live/origin_candidates.txt" || exit 1
 fi
 ORIGIN_CANDS_FILE="$RECON_DIR/live/origin_candidates.txt"
 ORIGIN_CANDS=$(wc -l < "$ORIGIN_CANDS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
@@ -2856,16 +2913,8 @@ PORT_URL_CANDIDATES=$(wc -l < "$RECON_DIR/urls/port_candidates.txt" 2>/dev/null 
 PORT_PHASE_STATUS="skipped"
 if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
     PORT_PHASE_STATUS="seeded"
-elif [ "$NAABU_STATUS" = "ok" ] && [ "$NMAP_STATUS" = "ok" ]; then
-    PORT_PHASE_STATUS="ok"
-elif [ "$NAABU_STATUS" = "ok" ] || [ "$NMAP_STATUS" = "ok" ]; then
-    PORT_PHASE_STATUS="partial"
-elif [ "$NAABU_STATUS" = "partial" ] || [ "$NMAP_STATUS" = "partial" ]; then
-    PORT_PHASE_STATUS="partial"
-elif [ "$NAABU_STATUS" = "error" ] || [ "$NMAP_STATUS" = "error" ]; then
-    PORT_PHASE_STATUS="error"
-elif [ "$NAABU_STATUS" = "unavailable" ] && [ "$NMAP_STATUS" = "unavailable" ]; then
-    PORT_PHASE_STATUS="unavailable"
+else
+    PORT_PHASE_STATUS="$(aggregate_optional_status "$NAABU_STATUS" "$NMAP_STATUS")"
 fi
 record_recon_phase \
     port_scan \
@@ -2877,14 +2926,17 @@ emit_claude_hint \
     phase                port_scan \
     open_ports_total     "$PORTS_OPEN" \
     port_url_candidates  "$PORT_URL_CANDIDATES"
+fi
 
 # ============================================================
 # Phase 4: URL Collection
 # ============================================================
+if [ "$RECON_COLLECT" != "ffuf" ]; then
 recon_budget_checkpoint url_collection
 echo ""
 log_info "Phase 4: URL Collection"
 
+if [ -z "$RECON_COLLECT" ]; then
 start_collector gau "$RECON_DIR/urls/gau.txt" \
     "recon/${RECON_TARGET_KEY}/urls/gau.txt" collect_gau_urls
 start_collector wayback_urls "$RECON_DIR/urls/wayback.txt" \
@@ -2892,9 +2944,11 @@ start_collector wayback_urls "$RECON_DIR/urls/wayback.txt" \
 start_collector waymore "$RECON_DIR/urls/waymore.txt" \
     "recon/${RECON_TARGET_KEY}/urls/waymore.txt" collect_waymore_urls
 wait_collector_group
+fi
 
-# katana 依赖 live hosts，因此只能在被动 URL collector 之后运行。
-select_collection_batch urls/katana "$RECON_DIR/live/urls.txt" 50 "katana-d3-jc-kf-all-v1"
+KATANA_SEED_LIMIT=50
+[ "$RECON_PROFILE" != "deep" ] || KATANA_SEED_LIMIT=5
+select_collection_batch urls/katana "$RECON_DIR/live/urls.txt" "$KATANA_SEED_LIMIT" "katana-d3-jc-kf-all-v1"
 : > "$RECON_DIR/urls/katana_results.tsv"
 start_collector katana "$RECON_DIR/urls/katana.txt" \
     "recon/${RECON_TARGET_KEY}/urls/katana.txt" collect_katana_urls
@@ -2913,7 +2967,7 @@ KATANA_ACCOUNTING="$(collection_accounting urls/katana)"
     [ -s "$RECON_DIR/live/urls.txt" ] && cat "$RECON_DIR/live/urls.txt"
     [ -s "$RECON_DIR/live/seed_urls.txt" ] && cat "$RECON_DIR/live/seed_urls.txt"
     for url_source in gau wayback waymore katana; do
-        append_artifact "$RECON_DIR/urls/${url_source}.txt"
+        append_artifact "$RECON_DIR/urls/${url_source}.txt" || exit 1
     done
 } 2>/dev/null | sort -u > "${RAW_URLS_STAGING}.tmp" 2>/dev/null
 mv -f "${RAW_URLS_STAGING}.tmp" "$RAW_URLS_STAGING"
@@ -3024,10 +3078,12 @@ emit_claude_hint \
     api_endpoints_filtered "$URLS_API_FILTERED" \
     sensitive_paths_filtered "$URLS_SENS_FILTERED" \
     url_filter_log       "$URL_FILTER_LOG"
+fi
 
 # ============================================================
 # Phase 5: JS Analysis
 # ============================================================
+if [ -z "$RECON_COLLECT" ]; then
 recon_budget_checkpoint js_analysis
 echo ""
 log_info "Phase 5: JavaScript Analysis"
@@ -3164,7 +3220,6 @@ PY
                 log_step "Reusing downloaded JS in legacy LinkFinder (top $LINKFINDER_MAX_JS)..."
             else
                 JS_LINK_ANALYZER="unavailable"
-                JS_ANALYSIS_STATUS="partial"
                 log_warn "xnLinkFinder/LinkFinder unavailable — skipping recursive JS endpoint extraction"
             fi
         fi
@@ -3264,10 +3319,12 @@ emit_claude_hint \
     linkfinder_endpoints   "$JS_LINKFINDER" \
     unverified_secret_strings "$JS_SECRETS" \
     secrets_verified       "false (regex-grep only; not interactsh-verified)"
+fi
 
 # ============================================================
 # Phase 6: Directory Fuzzing
 # ============================================================
+if [ "$RECON_COLLECT" != "katana" ]; then
 recon_budget_checkpoint dir_fuzz
 echo ""
 log_info "Phase 6: Directory Fuzzing"
@@ -3317,16 +3374,14 @@ ffuf_run_target() {
     local control_run="$worker_dir/control.jsonl"
     local main_run="$worker_dir/main.jsonl"
     local target_summary="$worker_dir/summary.tsv"
-    local spa_fallback="$worker_dir/spa_fallback.tsv"
     local control_ok=1
     local main_ok=0
     local control_failed=0
     local interrupted=0
     local control_exit=0
     local main_exit=0
-    local spa_fallback_size=0
+    local control_result
     local remaining
-    local filter_args=()
     local ffuf_pid="" timeout_cmd
     timeout_cmd="$(timeout_bin)"
     trap 'exit 143' TERM
@@ -3336,7 +3391,6 @@ ffuf_run_target() {
     : > "$worker_log"
     : > "$control_run"
     : > "$main_run"
-    : > "$spa_fallback"
     printf '%s\n' "$base_url" > "$worker_dir/url.txt"
     printf 'Fuzzing: %s\n' "$base_url" >> "$worker_log"
     bb_auth_args_for_url "$base_url" || return 1
@@ -3353,7 +3407,7 @@ ffuf_run_target() {
     "$timeout_cmd" --kill-after=2 "$remaining" ffuf -u "${base_url}/FUZZ" \
         -w - \
         -mc all \
-        -s -json \
+        -s -json -noninteractive \
         -t 1 \
         -rate "$target_rate" \
         -timeout 10 \
@@ -3362,19 +3416,14 @@ ffuf_run_target() {
     ffuf_pid=$!
     if wait "$ffuf_pid"; then
         ffuf_pid=""
-        if ! spa_fallback_size="$(python3 "$BASE_DIR/tools/recon_adapter.py" \
+        if ! control_result="$(python3 "$BASE_DIR/tools/recon_adapter.py" \
             --recon-dir "$RECON_DIR" \
             --ffuf-control-size \
             --controls "$control_run" 2>> "$worker_log")" || \
-           ! [[ "$spa_fallback_size" =~ ^[0-9]+$ ]]; then
-            printf 'random-miss controls invalid: %s\n' "$spa_fallback_size" >> "$worker_log"
-            spa_fallback_size=0
+           ! [[ "$control_result" =~ ^[0-9]+$ ]]; then
+            printf 'random-miss controls invalid: %s\n' "$control_result" >> "$worker_log"
             control_failed=1
             control_ok=0
-        fi
-        if [ "$spa_fallback_size" -gt 0 ]; then
-            filter_args=(-fs "$spa_fallback_size")
-            printf '%s\t%s\n' "$base_url" "$spa_fallback_size" > "$spa_fallback"
         fi
     else
         control_exit=$?
@@ -3396,17 +3445,19 @@ ffuf_run_target() {
         # Explicit controls above are paced; FFUF auto-calibration bypasses -rate.
         "$timeout_cmd" --kill-after=2 "$remaining" ffuf -u "${base_url}/FUZZ" \
             -w - \
-            -mc 200,301,302,403,405 \
-            "${filter_args[@]}" \
+            -mc all \
             -t "$target_threads" \
             -rate "$target_rate" \
             -timeout 10 \
             "${BB_URL_AUTH_ARGS[@]}" \
-            -s -json 2>> "$worker_log" < "$wordlist" > "$main_run" &
+            -s -json -noninteractive 2>> "$worker_log" < "$wordlist" > "$main_run" &
         ffuf_pid=$!
         if wait "$ffuf_pid"; then
             ffuf_pid=""
-            main_ok=1
+            if python3 "$BASE_DIR/tools/recon_adapter.py" --recon-dir "$RECON_DIR" \
+                --check-ffuf-run --results "$main_run" --wordlist "$wordlist" >> "$worker_log" 2>&1; then
+                main_ok=1
+            fi
         else
             main_exit=$?
             ffuf_pid=""
@@ -3446,6 +3497,8 @@ run_ffuf_phase() {
     local summary_artifact="-"
     local summary_ok="false"
     local phase_status="skipped"
+    local word_limit=0 page_wordlist accounting="" selected_count=0
+    local paging_args=()
     local base_url url worker_dir worker_pid worker_summary worker_status worker_attempted
     local worker_succeeded worker_failed worker_control_failed worker_interrupted
     local summary_values phase_note
@@ -3472,6 +3525,12 @@ run_ffuf_phase() {
 
     if [ -n "$wordlist" ]; then
         max_fuzz=$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)
+        FFUF_WORK_DIR="$(mktemp -d "$RECON_DIR/dirs/.ffuf-workers.XXXXXX")"
+        work_dir="$FFUF_WORK_DIR"
+        if [ "${RECON_PROFILE:-}" = "deep" ]; then
+            word_limit=512
+            paging_args=(--word-limit "$word_limit" --wordlist-dir "$work_dir/words")
+        fi
         archive_collector_artifact "$FFUF_TARGET_STATE" || return 1
         archive_collector_artifact "$FFUF_TARGET_PLAN" || return 1
         if python3 "$BASE_DIR/tools/recon_target_selector.py" \
@@ -3484,6 +3543,7 @@ run_ffuf_phase() {
             --targets "$FFUF_TARGETS_FILE" \
             --wordlist "$wordlist" \
             --limit "$max_fuzz" \
+            "${paging_args[@]}" \
             >> "$FFUF_LOG" 2>&1; then
             target_selection="ok"
             if target_pending="$(python3 - "$FFUF_TARGET_PLAN" <<'PY'
@@ -3519,12 +3579,12 @@ PY
     if [ -n "$wordlist" ]; then
         worker_limit="$FFUF_HOST_CONCURRENCY"
         [ "$worker_limit" -gt "$max_fuzz" ] && worker_limit="$max_fuzz"
+        selected_count=$(wc -l < "$FFUF_TARGETS_FILE")
+        [ "$worker_limit" -le "$selected_count" ] || worker_limit="$selected_count"
         [ "$worker_limit" -gt "$THREADS" ] && worker_limit="$THREADS"
         [ "$worker_limit" -gt "$RATE_LIMIT" ] && worker_limit="$RATE_LIMIT"
         target_threads=$((THREADS / worker_limit))
         target_rate=$((RATE_LIMIT / worker_limit))
-        FFUF_WORK_DIR="$(mktemp -d "$RECON_DIR/dirs/.ffuf-workers.XXXXXX")"
-        work_dir="$FFUF_WORK_DIR"
         result_tmp="$work_dir/results.jsonl"
         control_tmp="$work_dir/controls.jsonl"
         target_results_tmp="$work_dir/target-results.tsv"
@@ -3539,7 +3599,6 @@ PY
             result_artifact="$RECON_DIR/dirs/ffuf_results.jsonl"
         fi
         mkdir -p "$RECON_DIR/dirs"
-        : > "$RECON_DIR/dirs/spa_fallback.txt"
 
         while IFS= read -r url && [ "$worker_count" -lt "$max_fuzz" ]; do
             [ -n "$url" ] || continue
@@ -3550,8 +3609,12 @@ PY
             worker_count=$((worker_count + 1))
             worker_dir="$work_dir/target-$(printf '%04d' "$worker_count")"
             mkdir -p "$worker_dir"
+            page_wordlist="$wordlist"
+            if [ "$word_limit" -gt 0 ]; then
+                page_wordlist="$work_dir/words/$(printf '%04d' "$worker_count").txt"
+            fi
             (
-                ffuf_run_target "$base_url" "$worker_dir" "$wordlist" "$target_threads" "$target_rate"
+                ffuf_run_target "$base_url" "$worker_dir" "$page_wordlist" "$target_threads" "$target_rate"
             ) &
             FFUF_WORKER_PIDS+=("$!")
             while [ "${#FFUF_WORKER_PIDS[@]}" -ge "$worker_limit" ]; do
@@ -3584,7 +3647,6 @@ PY
                     cat "$worker_dir/main.jsonl" >> "$result_tmp" || return 1
                 fi
             fi
-            [ -s "$worker_dir/spa_fallback.tsv" ] && cat "$worker_dir/spa_fallback.tsv" >> "$RECON_DIR/dirs/spa_fallback.txt"
             worker_summary="$worker_dir/summary.tsv"
             if [ -s "$worker_summary" ]; then
                 IFS=$'\t' read -r base_url worker_status worker_attempted worker_succeeded worker_failed worker_control_failed worker_interrupted < "$worker_summary"
@@ -3604,6 +3666,21 @@ PY
             fi
         done
 
+        if [ "$word_limit" -gt 0 ]; then
+            python3 - "$FFUF_TARGET_PLAN" "$target_results_tmp" <<'PY_FFUF_PAGES'
+import json
+import sys
+from pathlib import Path
+plan = json.loads(Path(sys.argv[1]).read_text())
+pages = {item["url"]: item["word_page"]["receipt"] for item in plan["selected"]}
+path = Path(sys.argv[2])
+rows = []
+for row in path.read_text().splitlines():
+    url, status = row.split("\t")
+    rows.append(f"{url}\t{status}\t{pages[url]}\n")
+path.write_text("".join(rows))
+PY_FFUF_PAGES
+        fi
 
         if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
             archive_collector_artifact "$RECON_DIR/dirs/ffuf_results.jsonl" || return 1
@@ -3669,6 +3746,10 @@ PY
                 --results "$target_results_tmp" \
                 >> "$FFUF_LOG" 2>&1; then
                 target_record="ok"
+                accounting="$(python3 "$BASE_DIR/tools/recon_target_selector.py" --accounting \
+                    --target "$TARGET" --state "$FFUF_TARGET_STATE" --plan "$FFUF_TARGET_PLAN")" || return 1
+                target_pending="${accounting#*remaining=}"
+                target_pending="${target_pending%%;*}"
             else
                 target_record="failed"
                 printf '%s\n' "FFUF target rotation state update failed; completed coverage was not advanced" >> "$FFUF_LOG"
@@ -3688,19 +3769,22 @@ PY
         fi
     fi
 
-    if [ "$phase_status" = "ok" ] && [ -n "$work_dir" ]; then
+    if { [ "$phase_status" = "ok" ] || [ "$FFUF_ATTEMPTED" -eq 0 ]; } && [ -n "$work_dir" ]; then
         rm -rf -- "$work_dir"
         FFUF_WORK_DIR=""
     fi
     if [ "$FFUF_ATTEMPTED" -eq 0 ] && [ -z "$skip_reason" ]; then
         skip_reason="no usable base URLs"
     fi
+    if [ "$target_selection" = "failed" ] || [ "$target_selection" = "partial" ]; then
+        phase_status="partial"
+    fi
     if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
         log_done "Directory fuzzing complete: attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED observations=$FFUF_OBSERVATIONS (host workers=$worker_count)"
     else
         log_warn "Directory fuzzing skipped: ${skip_reason:-no runnable inputs}"
     fi
-    phase_note="bounded host sampling with rotation; host_concurrency=${worker_limit:-0}; target_threads=${target_threads:-0}; rate_limit=$RATE_LIMIT; overlaps_later_phases=false; budget=${FFUF_EFFECTIVE_BUDGET_SECONDS}s (hard=${DIR_FUZZ_HARD_BUDGET_SECONDS}s); attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED interrupted=$FFUF_INTERRUPTED parse_errors=$FFUF_PARSE_ERRORS target_selection=$target_selection target_record=$target_record pending=$target_pending; not complete directory coverage"
+    phase_note="bounded host sampling with rotation; host_concurrency=${worker_limit:-0}; target_threads=${target_threads:-0}; rate_limit=$RATE_LIMIT; overlaps_later_phases=false; budget=${FFUF_EFFECTIVE_BUDGET_SECONDS}s (hard=${DIR_FUZZ_HARD_BUDGET_SECONDS}s); attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED interrupted=$FFUF_INTERRUPTED parse_errors=$FFUF_PARSE_ERRORS target_selection=$target_selection target_record=$target_record pending=$target_pending; word_limit=$word_limit; $accounting; continuation=optional selected FFUF batch; closure_blocking=false; not complete directory coverage"
     [ -n "$skip_reason" ] && phase_note="$phase_note; skipped_reason=$skip_reason"
     record_recon_phase \
         dir_fuzz \
@@ -3738,10 +3822,12 @@ PY
 }
 
 run_ffuf_phase
+fi
 
 # ============================================================
 # Phase 6.5: Config File Exposure Check
 # ============================================================
+if [ -z "$RECON_COLLECT" ]; then
 recon_budget_checkpoint config_exposure
 echo ""
 log_info "Phase 6.5: Config File Exposure Check"
@@ -4326,10 +4412,12 @@ emit_claude_hint \
     leaksearch_lines     "$LEAKSEARCH_COUNT" \
     cloud_enum_status    "$CLOUD_ENUM_STATUS" \
     cloud_enum_lines     "$CLOUD_ENUM_COUNT"
+fi
 
 # ============================================================
 # Phase 7: Parameter Discovery
 # ============================================================
+if [ "$RECON_COLLECT" != "ffuf" ]; then
 recon_budget_checkpoint param_disco
 echo ""
 log_info "Phase 7: Parameter Discovery"
@@ -4345,8 +4433,17 @@ if [ -s "$PARAM_URLS_FOR_DISCOVERY" ]; then
     PARAM_DISCOVERY_STATUS="ok"
     log_step "Extracting parameters from collected URLs..."
 
-    # Extract parameter names (macOS compatible - no grep -P)
-    sed -nE 's/.*[?&]([^=&]+)=.*/\1/p' "$PARAM_URLS_FOR_DISCOVERY" 2>/dev/null \
+    # Preserve every raw query key, including repeated keys and valueless flags.
+    awk '{
+        sub(/#.*/, "")
+        query_start = index($0, "?")
+        if (!query_start) next
+        count = split(substr($0, query_start + 1), pairs, "&")
+        for (i = 1; i <= count; i++) {
+            sub(/=.*/, "", pairs[i])
+            if (pairs[i] != "") print pairs[i]
+        }
+    }' "$PARAM_URLS_FOR_DISCOVERY" 2>/dev/null \
         | sort | uniq -c | sort -rn > "$RECON_DIR/params/param_frequency.txt" 2>/dev/null || true
 
     # Get unique param names
@@ -4394,6 +4491,7 @@ emit_claude_hint \
     source_references "$CICD_SOURCE_COUNT" \
     analysis_status not_run \
     artifact "recon/${RECON_TARGET_KEY}/cicd/source_candidates.json"
+fi
 
 # ============================================================
 # Routing candidates: derive from existing evidence, then run one bounded
@@ -4411,12 +4509,12 @@ fi
 # helper performs a bounded read-only GET and appends compact observations; it
 # never expands scope or turns a response difference into a finding.
 HOST_VERIFY_STATUS="ok"
+if [ -z "$RECON_COLLECT" ]; then
 if ! python3 "$BASE_DIR/tools/recon_host_verify.py" \
     --repo-root "$BASE_DIR" \
     --target "$TARGET" \
     > "$RECON_DIR/logs/host_collision_verify.json" 2>&1; then
     HOST_VERIFY_STATUS="partial"
-    RECON_PHASE_PARTIAL=1
     log_warn "Host collision verification failed; candidate and raw recon artifacts remain available"
 fi
 HOST_VERIFY_COUNT=$(python3 - "$RECON_DIR/exposure/host_collision_summary.json" <<'PY'
@@ -4437,6 +4535,7 @@ record_recon_phase \
     "recon/${RECON_TARGET_KEY}/exposure/host_collision_summary.json" \
     "$HOST_VERIFY_COUNT" \
     "bounded read-only Host/SNI/default-vhost evidence; response differences remain candidates and do not expand Scope"
+fi
 HOST_PIVOT_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/host_pivot_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 AI_ASSET_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/ai_asset_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 HOST_RANKING_HOSTS=$(wc -l < "$RECON_DIR/exposure/host_ranking.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
@@ -4460,9 +4559,9 @@ emit_claude_hint \
 # Optional post-run storage guard
 # ============================================================
 RAW_ARCHIVE_STATUS="ok"
+if [ "$RECON_COLLECT" != "ffuf" ]; then
 if ! publish_raw_url_archive; then
     RAW_ARCHIVE_STATUS="partial"
-    RECON_PHASE_PARTIAL=1
     log_warn "Could not merge raw URL archive; current staging remains available for recovery"
 fi
 record_recon_phase \
@@ -4471,6 +4570,7 @@ record_recon_phase \
     "recon/${RECON_TARGET_KEY}/urls/raw/all.txt" \
     "$(artifact_line_count "$RAW_URLS_ARCHIVE")" \
     "append-only deduplicated raw URL archive; Active views remain run-scoped"
+fi
 post_compress_raw_recon_urls "$RECON_DIR"
 
 # ============================================================
@@ -4481,6 +4581,7 @@ post_compress_raw_recon_urls "$RECON_DIR"
 # method; failures are advisory and never fail the recon run.
 ROUTE_KIND_STATUS="ok"
 ROUTE_KIND_PROBED=0
+if [ -z "$RECON_COLLECT" ]; then
 if python3 "$BASE_DIR/tools/route_kinds.py" probe \
     --target "$TARGET" \
     --repo-root "$BASE_DIR" \
@@ -4497,27 +4598,7 @@ record_recon_phase \
     "recon/${RECON_TARGET_KEY}/route_kinds.json" \
     "$ROUTE_KIND_PROBED" \
     "GET-probe facts only; labels never close cells and never override AI selection"
-
-RECON_ELAPSED_SECONDS=$(( $(date +%s) - RECON_STARTED_EPOCH ))
-RECON_BUDGET_STATUS="ok"
-[ "${RECON_PHASE_PARTIAL:-0}" -eq 1 ] && RECON_BUDGET_STATUS="partial"
-RECON_SOFT_BUDGET_STATUS="within_budget"
-if [ "$RECON_BUDGET_ADVISORY_EXCEEDED" -eq 1 ] || [ "$RECON_ELAPSED_SECONDS" -ge "$RECON_SOFT_BUDGET_SECONDS" ]; then
-    RECON_SOFT_BUDGET_STATUS="advisory_exceeded"
 fi
-record_recon_phase \
-    run_budget \
-    "$RECON_BUDGET_STATUS" \
-    "recon/${RECON_TARGET_KEY}/recon_manifest.jsonl" \
-    0 \
-    "elapsed_seconds=${RECON_ELAPSED_SECONDS}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; soft_budget_status=${RECON_SOFT_BUDGET_STATUS}; soft target never deletes raw surface"
-RECON_BUDGET_RECORD_WRITTEN=1
-emit_claude_hint \
-    phase               run_budget \
-    profile             "$RECON_PROFILE" \
-    elapsed_seconds     "$RECON_ELAPSED_SECONDS" \
-    soft_budget_seconds "$RECON_SOFT_BUDGET_SECONDS" \
-    soft_budget_status  "$RECON_SOFT_BUDGET_STATUS"
 
 sync_observation_inventory final
 
@@ -4541,13 +4622,34 @@ record_recon_phase \
     0 \
     "derived cache only; failure is recoverable and does not close attack surface"
 
+RECON_ELAPSED_SECONDS=$(( $(date +%s) - RECON_STARTED_EPOCH ))
+RECON_BUDGET_STATUS="ok"
+[ "${RECON_PHASE_PARTIAL:-0}" -eq 1 ] && RECON_BUDGET_STATUS="partial"
+RECON_SOFT_BUDGET_STATUS="within_budget"
+if [ "$RECON_BUDGET_ADVISORY_EXCEEDED" -eq 1 ] || [ "$RECON_ELAPSED_SECONDS" -ge "$RECON_SOFT_BUDGET_SECONDS" ]; then
+    RECON_SOFT_BUDGET_STATUS="advisory_exceeded"
+fi
+record_recon_phase \
+    run_budget \
+    "$RECON_BUDGET_STATUS" \
+    "recon/${RECON_TARGET_KEY}/recon_manifest.jsonl" \
+    0 \
+    "elapsed_seconds=${RECON_ELAPSED_SECONDS}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; soft_budget_status=${RECON_SOFT_BUDGET_STATUS}; raw surface preserved; optional capability gaps remain in phase receipts"
+RECON_BUDGET_RECORD_WRITTEN=1
+emit_claude_hint \
+    phase               run_budget \
+    profile             "$RECON_PROFILE" \
+    elapsed_seconds     "$RECON_ELAPSED_SECONDS" \
+    soft_budget_seconds "$RECON_SOFT_BUDGET_SECONDS" \
+    soft_budget_status  "$RECON_SOFT_BUDGET_STATUS"
+
 # ============================================================
 # Summary
 # ============================================================
 echo ""
 echo "============================================="
 echo "  Recon Summary — $TARGET"
-echo "  Completed: $(date)"
+echo "  Finished: $(date) (status: $RECON_BUDGET_STATUS)"
 echo "============================================="
 echo ""
 echo "  Subdomains:        $(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)"
@@ -4576,7 +4678,7 @@ echo "  Cloud candidates:  $(wc -l < "$RECON_DIR/exposure/cloud_storage_candidat
 [ -f "$RECON_MANIFEST" ] && \
 echo "  Phase manifest:    $RECON_MANIFEST"
 
-[ -f "$RECON_DIR/cicd/source_candidates.json" ] && \
+[ -n "${CICD_SOURCE_COUNT:-}" ] && \
 echo "  Source references: $CICD_SOURCE_COUNT (CI analysis not_run)"
 
 echo ""
@@ -4587,3 +4689,8 @@ echo "  Collected artifacts are ready for native review."
 echo "    python3 tools/surface.py --target $TARGET"
 echo "    python3 tools/context_pack.py --target $TARGET"
 echo "============================================="
+
+if [ "$RECON_PHASE_PARTIAL" -eq 1 ]; then
+    log_warn "Recon collection is incomplete; inspect phase receipts before retrying. Collected artifacts are preserved."
+    exit 75
+fi

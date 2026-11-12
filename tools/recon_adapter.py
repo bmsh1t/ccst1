@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import base64
 import gzip
 import hashlib
 import json
@@ -72,6 +73,9 @@ class ReconAdapter:
                     if not isinstance(endpoint, str) or not endpoint.startswith(("http://", "https://")):
                         raise ValueError("invalid Katana request receipt")
                     seen.add(endpoint)
+                    # Katana also emits discovery/deduplicated rows without a response.
+                    if "response" not in row and not row.get("error"):
+                        continue
                     response = row.get("response")
                     status = response.get("status_code") if isinstance(response, dict) else None
                     if row.get("error") or type(status) is not int or status < 100 or status >= 500 or status == 429:
@@ -479,6 +483,8 @@ class ReconAdapter:
                 f"{controls_path}: expected exactly 2 valid FFUF controls, got {len(controls)}"
                 + (f"; {detail}" if detail else "")
             )
+        for observation in controls:
+            self._check_ffuf_status(observation)
         first, second = controls
         first_length = int(first.get("length", 0) or 0)
         if (
@@ -498,6 +504,38 @@ class ReconAdapter:
         ):
             return first_length
         return 0
+
+    @staticmethod
+    def _check_ffuf_status(observation: dict) -> None:
+        status = observation["status"]
+        if status < 100 or status in {408, 429} or status >= 500:
+            raise ValueError(f"FFUF collection incomplete: HTTP {status} at {observation['url']}")
+
+    def check_ffuf_run(self, results_path: str | Path, wordlist_path: str | Path) -> None:
+        """Exit-zero alone does not prove that the target served the requests."""
+        # FFUF's stdin wordlist retains blank, comment and duplicate lines without -ic.
+        with Path(wordlist_path).open("rb") as wordlist:
+            words = [line.removesuffix(b"\n").removesuffix(b"\r") for line in wordlist]
+        expected = len(words)
+        errors: dict = {"count": 0, "preview": []}
+        positions = set()
+        for record in self._iter_ffuf_jsonl_records(Path(results_path), errors):
+            observation = self._project_ffuf_result(record)
+            if observation is None:
+                raise ValueError("invalid FFUF response")
+            self._check_ffuf_status(observation)
+            position = record.get("position")
+            inputs = record.get("input")
+            if (type(position) is not int or not 1 <= position <= expected or position in positions
+                    or not isinstance(inputs, dict) or not isinstance(inputs.get("FUZZ"), str)):
+                raise ValueError("FFUF collection incomplete: invalid or duplicate input position")
+            if base64.b64decode(inputs["FUZZ"], validate=True) != words[position - 1]:
+                raise ValueError("FFUF response input differs from the selected wordlist")
+            positions.add(position)
+        if errors["count"]:
+            raise ValueError("; ".join(errors["preview"]))
+        if not expected or len(positions) != expected:
+            raise ValueError(f"FFUF collection incomplete: expected {expected} responses, received {len(positions)}")
 
     def _relative_artifact_metadata(self, paths: list[Path]) -> list[dict]:
         metadata = []
@@ -819,11 +857,13 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     action.add_argument("--summarize-ffuf", action="store_true")
     action.add_argument("--read-ffuf", action="store_true")
     action.add_argument("--ffuf-control-size", action="store_true")
+    action.add_argument("--check-ffuf-run", action="store_true")
     action.add_argument("--katana-receipts", action="store_true")
     parser.add_argument("--capture", type=Path)
     parser.add_argument("--seeds", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--results", type=Path)
+    parser.add_argument("--wordlist", type=Path)
     parser.add_argument("--exit-code", type=int, default=0)
     parser.add_argument("--controls", default="", help="Result-only FFUF control JSONL")
     parser.add_argument("--attempted", type=int, default=0)
@@ -850,6 +890,11 @@ def main(argv: list[str] | None = None) -> int:
             if not args.controls:
                 raise ValueError("--controls is required with --ffuf-control-size")
             print(adapter.get_ffuf_control_filter_size(args.controls))
+            return 0
+        if args.check_ffuf_run:
+            if not args.results or not args.wordlist:
+                raise ValueError("--results and --wordlist are required with --check-ffuf-run")
+            adapter.check_ffuf_run(args.results, args.wordlist)
             return 0
         if args.summarize_ffuf:
             payload = adapter.summarize_ffuf_results(

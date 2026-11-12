@@ -34,7 +34,7 @@ from autopilot_state import (
     _load_loop_guard_projection,
     _load_json_inject_projection,
     _closure_snapshot_digest,
-    _pick_next_action,
+    build_control_projection,
     build_closure_projection,
     build_decision_projection,
     build_autopilot_state,
@@ -849,12 +849,14 @@ def test_ai_action_outside_initial_frontier_uses_queue_owner_and_resumes(tmp_pat
 
 
 def test_pending_cidr_continuation_does_not_select_recon():
-    assert _pick_next_action(
-        True,
-        {"p1": [], "p2": []},
-        None,
-        cidr_continuation={"status": "pending", "next_offset": 4096},
-    ) == "handoff"
+    projection = build_control_projection({
+        "has_recon": True,
+        "recon_artifacts": {"cidr_continuation": {"status": "pending", "next_offset": 4096}},
+    })
+    assert projection["next_action"] == "handoff"
+    continuation = projection["owner_continuations"][0]
+    assert continuation["owner"] == "recon" and continuation["id"] == "cidr:4096"
+    assert continuation["runnable"] is True
 
 
 def test_priority_frontier_exposes_queue_and_surface_without_cross_owner_score():
@@ -4622,11 +4624,11 @@ class TestAutopilotState:
             "alpha.test\nbeta.test\ngamma.test\n",
             encoding="utf-8",
         )
-        (batch_dir / "high_value_targets.json").write_text(
-            json.dumps([
-                {"target": "alpha.test", "score": "invalid", "top_signals": []},
-                {"target": "uncompleted.test", "score": 99, "top_signals": []},
-            ]),
+        (batch_dir / "batch_inventory.json").write_text(
+            json.dumps({"targets": [
+                {"target": "alpha.test", "artifact_line_counts": {"urls/all.txt": 3}},
+                {"target": "uncompleted.test", "artifact_line_counts": {"urls/all.txt": 99}},
+            ]}),
             encoding="utf-8",
         )
 
@@ -4636,9 +4638,10 @@ class TestAutopilotState:
         assert state["next_action"] == "select_completed_domain"
         assert state["batch"]["completed"] == ["alpha.test"]
         assert state["batch"]["failed"] == ["beta.test"]
-        assert state["batch"]["pending"] == ["gamma.test"]
+        assert state["batch"]["pending"] == ["gamma.test", "beta.test"]
         assert [item["target"] for item in state["batch"]["candidates"]] == ["alpha.test"]
-        assert state["batch"]["candidates"][0]["score"] == 0
+        assert state["batch"]["candidates"][0]["artifact_line_counts"] == {"urls/all.txt": 3}
+        assert "score" not in state["batch"]["candidates"][0]
         assert state["batch"]["candidates"][0]["parent_scope_ref"] == str(scope.resolve())
         assert state["batch"]["candidates"][0]["parent_scope_hash"] == state["scope"]["scope_hash"]
         assert state["batch"]["candidates"][0]["continuation_create_args"] == [
@@ -4728,13 +4731,13 @@ class TestAutopilotState:
         assert not old_state.exists()
         assert not old_recon.exists()
 
-    def test_all_failed_current_batch_is_terminal(self, tmp_path):
+    def test_all_failed_current_batch_remains_retryable(self, tmp_path):
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
         batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
         batch_dir.mkdir(parents=True, exist_ok=True)
         (batch_dir / "failed_targets.txt").write_text(
-            "alpha.test\nbeta.test\nold.test\n",
+            "alpha.test\nbeta.test\nold.test\nalpha.test\n",
             encoding="utf-8",
         )
         (batch_dir / "pending_targets.txt").write_text(
@@ -4745,10 +4748,10 @@ class TestAutopilotState:
         state = build_autopilot_state(str(tmp_path), str(scope))
         output = format_autopilot_state(state)
 
-        assert state["next_action"] == "batch_failed"
-        assert state["batch"]["failed"] == ["alpha.test", "beta.test"]
-        assert state["batch"]["pending"] == []
-        assert "do not retry the failed batch automatically" in output
+        assert state["next_action"] == "run_batch_recon"
+        assert state["batch"]["failed"] == ["beta.test", "alpha.test"]
+        assert state["batch"]["pending"] == ["beta.test", "alpha.test"]
+        assert "Pending: 2" in output
 
     def test_changed_batch_input_filters_old_candidates_and_adds_current_pending(self, tmp_path):
         scope = tmp_path / "targets.txt"
@@ -4757,8 +4760,8 @@ class TestAutopilotState:
         batch_dir.mkdir(parents=True, exist_ok=True)
         (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
         (batch_dir / "pending_targets.txt").write_text("alpha.test\n", encoding="utf-8")
-        (batch_dir / "high_value_targets.json").write_text(
-            json.dumps([{"target": "alpha.test", "score": 99}]),
+        (batch_dir / "batch_inventory.json").write_text(
+            json.dumps({"targets": [{"target": "alpha.test", "artifact_line_counts": {"urls/all.txt": 99}}]}),
             encoding="utf-8",
         )
 
@@ -4788,14 +4791,14 @@ class TestAutopilotState:
         assert state["batch"]["pending"] == ["alpha.test", "beta.test"]
         assert state["next_action"] == "run_batch_recon"
 
-    def test_partial_batch_keeps_current_pending_when_ranked_json_is_invalid(self, tmp_path):
+    def test_partial_batch_keeps_current_pending_when_inventory_is_invalid(self, tmp_path):
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
         batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
         batch_dir.mkdir(parents=True, exist_ok=True)
         (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
         (batch_dir / "pending_targets.txt").write_text("beta.test\nold.test\n", encoding="utf-8")
-        (batch_dir / "high_value_targets.json").write_text("{invalid", encoding="utf-8")
+        (batch_dir / "batch_inventory.json").write_text("{invalid", encoding="utf-8")
 
         state = build_autopilot_state(str(tmp_path), str(scope))
 
@@ -4888,27 +4891,19 @@ class TestAutopilotState:
 
 
 
-    def test_fresh_recon_without_ranked_candidate_prepares_surface_context(self):
-        assert (
-            _pick_next_action(
-                True,
-                {"review_pool": [], "p1": []},
-                None,
-                fresh_recon_ready=True,
-            )
-            == "handoff"
-        )
+    def test_fresh_recon_without_owner_continuation_keeps_native_selection(self):
+        projection = build_control_projection({"has_recon": True})
+        assert projection["next_action"] == "continue_investigation"
+        assert projection["owner_continuations"] == []
 
     def test_validated_incomplete_draft_completes_without_revalidating(self):
-        assert (
-            _pick_next_action(
-                True,
-                {"review_pool": [], "p1": []},
-                None,
-                {"draft_completion_pending": 1},
-            )
-            == "complete_report_draft"
-        )
+        projection = build_control_projection({
+            "has_recon": True,
+            "structured_findings": {"next_draft_completion": {"id": "draft-candidate"}},
+        })
+        assert projection["next_action"] == "complete_report_draft"
+        assert projection["owner_continuations"][0]["owner"] == "finding"
+        assert projection["owner_continuations"][0]["id"] == "draft-candidate"
 
     def test_host_list_relative_target_uses_batch_handoff_not_aggregate_surface(self, tmp_path, monkeypatch):
         repo_root = tmp_path
@@ -4919,8 +4914,8 @@ class TestAutopilotState:
         recon_dir = repo_root / "recon" / target_storage_key("scope.txt")
         recon_dir.mkdir(parents=True, exist_ok=True)
         (recon_dir / "completed_targets.txt").write_text("api.target.com\n")
-        (recon_dir / "high_value_targets.json").write_text(
-            json.dumps([{"target": "api.target.com", "score": 12}]),
+        (recon_dir / "batch_inventory.json").write_text(
+            json.dumps({"targets": [{"target": "api.target.com", "artifact_line_counts": {"urls/all.txt": 12}}]}),
             encoding="utf-8",
         )
 
@@ -5022,8 +5017,10 @@ class TestAutopilotState:
         }
         legacy = {"next_validation": {"id": "legacy-candidate"}}
 
-        assert _pick_next_action(True, {}, None, ready) == "validate_finding"
-        assert _pick_next_action(True, {}, None, legacy) == "validate_finding"
+        for findings in (ready, legacy):
+            projection = build_control_projection({"has_recon": True, "structured_findings": findings})
+            assert projection["next_action"] == "validate_finding"
+            assert projection["owner_continuations"][0]["id"] == findings["next_validation"]["id"]
 
     def test_root_json_claim_is_read_only_candidate_evidence_handoff(self, tmp_path, store):
         findings_dir = tmp_path / "findings" / "target.com"
@@ -5053,7 +5050,7 @@ class TestAutopilotState:
         assert state["root_finding_claim_next"] == {}
         assert load_queue(tmp_path, store.target)["actions"] == []
 
-    def test_wait_marker_preempts_missing_candidate_evidence(self):
+    def test_recon_wait_does_not_hide_existing_finding_owner(self):
         structured = {
             "next_validation": {
                 "id": "waiting-candidate",
@@ -5061,16 +5058,13 @@ class TestAutopilotState:
             }
         }
 
-        assert (
-            _pick_next_action(
-                True,
-                {},
-                None,
-                structured,
-                recon_in_progress=True,
-            )
-            == "wait_recon"
-        )
+        projection = build_control_projection({
+            "has_recon": True, "structured_findings": structured, "recon_in_progress": True,
+        })
+        assert projection["next_action"] == "validate_finding"
+        assert projection["hard_gate"] == {}
+        assert projection["owner_continuations"][0]["id"] == "waiting-candidate"
+        assert build_control_projection({"has_recon": True, "recon_in_progress": True})["next_action"] == "wait_recon"
 
     def test_outputs_validation_runner_candidates_as_advisory_pool(self, tmp_path, store):
         repo_root = tmp_path
