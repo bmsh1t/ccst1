@@ -29,8 +29,10 @@ from urllib.parse import urlsplit
 
 try:
     from tools.artifact_io import write_json_atomic, write_text_atomic
+    from tools.technology_inventory import parse_httpx_text_line
 except ImportError:  # pragma: no cover - direct tools/ execution
     from artifact_io import write_json_atomic, write_text_atomic
+    from technology_inventory import parse_httpx_text_line
 
 
 FFUF_SUMMARY_SCHEMA = "ffuf-summary-v1"
@@ -57,6 +59,39 @@ class ReconAdapter:
 
     def __init__(self, recon_dir: str | Path):
         self._dir = Path(recon_dir)
+
+    def publish_xnlinkfinder_receipts(self, capture: Path, seeds: Path, raw: Path,
+                                     output: Path, results: Path, exit_code: int,
+                                     target: str) -> bool:
+        """Preserve links; only observed successful inputs can advance collection."""
+        from tools.scope_context import url_belongs_to_target
+
+        attempted = seeds.read_text(encoding="utf-8").splitlines()
+        log = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", capture.read_text(encoding="utf-8", errors="replace"))
+        responses: dict[str, list[int]] = {}
+        for line in log.splitlines():
+            match = re.fullmatch(r"Response (\d{3}): (https?://\S+)", line.strip())
+            if match and match[2] in attempted:
+                responses.setdefault(match[2], []).append(int(match[1]))
+        # xnLinkFinder can swallow errors and exit zero, including after a response.
+        normal_output = (exit_code == 0 and raw.is_file()
+                         and re.search(r"(?m)^Potential unique links found for .+: \d+", log)
+                         and (f"Links successfully written to file {raw}" in log
+                              or "No links were found so nothing written to file." in log)
+                         and not re.search(r"(?im)^\s*ERROR\b|THE PROGRAM WAS STOPPED|DATA IS LIKELY TO BE INCOMPLETE", log))
+        links = []
+        if raw.is_file():
+            for line in raw.read_text(encoding="utf-8", errors="replace").splitlines():
+                value = line.strip()
+                if value and (not value.lower().startswith(("http://", "https://", "//"))
+                              or url_belongs_to_target(value, target)):
+                    links.append(value)
+        successful = {url for url, statuses in responses.items()
+                      if normal_output and all(200 <= code < 300 for code in statuses)}
+        write_text_atomic(output, "".join(url + "\n" for url in dict.fromkeys(links)))
+        write_text_atomic(results, "".join(url + "\t" + ("ok" if url in successful else "partial") + "\n"
+                                          for url in attempted))
+        return len(successful) == len(attempted)
 
     def publish_katana_receipts(self, capture: Path, seeds: Path, output: Path,
                                 results: Path, exit_code: int) -> None:
@@ -88,6 +123,48 @@ class ReconAdapter:
             receipts.append(seed + "\t" + ("ok" if ok else "partial") + "\n")
         write_text_atomic(output, "".join(url + "\n" for url in sorted(seen)))
         write_text_atomic(results, "".join(receipts))
+
+    def publish_httpx_receipts(self, capture: Path, seeds: Path, results: Path,
+                               exit_code: int) -> None:
+        """Merge actual responses before marking inputs complete; keep misses retryable."""
+        attempted = seeds.read_text(encoding="utf-8").splitlines()
+        successful = set()
+        rows = []
+        for line in capture.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            parsed = parse_httpx_text_line(line)
+            if parsed is None or not re.fullmatch(r"[1-5]\d\d", str(parsed["status"])):
+                raise ValueError("invalid httpx response receipt")
+            url = urlsplit(parsed["url"])
+            matched = False
+            for seed in attempted:
+                candidate = urlsplit(seed if "://" in seed else "//" + seed)
+                if candidate.hostname != url.hostname:
+                    continue
+                if candidate.scheme and candidate.scheme != url.scheme:
+                    continue
+                candidate_port = candidate.port or {"http": 80, "https": 443}.get(candidate.scheme)
+                response_port = url.port or {"http": 80, "https": 443}.get(url.scheme)
+                if candidate_port is not None and candidate_port != response_port:
+                    continue
+                if candidate.scheme and (candidate.path or "/", candidate.query) != (url.path or "/", url.query):
+                    continue
+                matched = True
+                successful.add(seed)
+            if not matched:
+                raise ValueError("httpx response is outside the selected probe inputs")
+            rows.append(line)
+        canonical = self._dir / "live/httpx_full.txt"
+        previous = canonical.read_text(encoding="utf-8").splitlines() if canonical.is_file() else []
+        combined = list(dict.fromkeys([*previous, *rows]))
+        write_text_atomic(canonical, "".join(line + "\n" for line in combined))
+        live = list(dict.fromkeys([*self._read_lines("live/urls.txt"),
+            *(line.split()[0] for line in combined if line.startswith(("http://", "https://")))]))
+        write_text_atomic(self._dir / "live/urls.txt", "".join(url + "\n" for url in live))
+        write_text_atomic(results, "".join(seed + "\t" + (
+            "ok" if exit_code == 0 and seed in successful else "partial"
+        ) + "\n" for seed in attempted))
 
     def _read_lines(self, *paths: str) -> list[str]:
         """Read non-empty lines from the first existing file in paths.
@@ -859,6 +936,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     action.add_argument("--ffuf-control-size", action="store_true")
     action.add_argument("--check-ffuf-run", action="store_true")
     action.add_argument("--katana-receipts", action="store_true")
+    action.add_argument("--httpx-receipts", action="store_true")
     parser.add_argument("--capture", type=Path)
     parser.add_argument("--seeds", type=Path)
     parser.add_argument("--output", type=Path)
@@ -881,6 +959,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_cli_parser().parse_args(argv)
     adapter = ReconAdapter(args.recon_dir)
     try:
+        if args.httpx_receipts:
+            if not all((args.capture, args.seeds, args.results)):
+                raise ValueError("--httpx-receipts requires --capture, --seeds and --results")
+            adapter.publish_httpx_receipts(args.capture, args.seeds, args.results, args.exit_code)
+            return 0
         if args.katana_receipts:
             if not all((args.capture, args.seeds, args.output, args.results)):
                 raise ValueError("--katana-receipts requires --capture, --seeds, --output and --results")

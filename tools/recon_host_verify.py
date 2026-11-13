@@ -210,28 +210,32 @@ def verify(
     summary_path = recon_dir / SUMMARY_PATH
     context = load_scope_context(repo, resolved)
     rows = _read_jsonl(candidate_path)
-    selected = select_candidates(rows, resolved, context, limit=limit)
-    seen_keys = {
-        str(item.get("candidate_key"))
-        for item in _read_jsonl(output_path)
-        if item.get("candidate_key")
-    }
+    eligible = select_candidates(rows, resolved, context, limit=len(rows))
+    latest = {str(item.get("candidate_key")): item for item in _read_jsonl(output_path)}
+    seen_keys = set()
+    for item in eligible:
+        key = _candidate_key(item["row"])
+        old = latest.get(key, {})
+        if (old.get("outcome") not in {"unavailable", "partial"}
+                and len(old.get("probes", [])) >= len(item["hosts"])
+                and all(probe.get("result", {}).get("status") for probe in old["probes"])):
+            seen_keys.add(key)
+    pending = [item for item in eligible if _candidate_key(item["row"]) not in seen_keys]
+    pending.sort(key=lambda item: latest.get(_candidate_key(item["row"]), {}).get("observed_at", ""))
+    selected = pending[:limit]
     host_set = {host for item in selected for host, _port in item["hosts"]}
     scheme_map = _schemes(recon_dir, host_set)
     observations = []
     probes = 0
-    skipped_existing = 0
+    skipped_existing = len(eligible) - len(pending)
+    completed = 0
     for item in selected:
         row = item["row"]
         key = _candidate_key(row)
-        if key in seen_keys:
-            skipped_existing += 1
-            continue
         results = []
+        previous = latest.get(key, {})
         candidate_hosts = [host for host, _port in item["hosts"] if not _is_ip(host)]
         for host, port in item["hosts"]:
-            if probes >= max_probes:
-                break
             schemes = scheme_map.get(host) or ["https"]
             scheme = next((value for value in schemes if _in_scope(host, context, scheme=value, port=port)), None)
             if scheme is None:
@@ -248,11 +252,20 @@ def verify(
                 )
             if request_host != host and not _in_scope(request_host, context, scheme=scheme, port=port):
                 continue
-            result = _probe(request_host, **probe_kwargs)
-            probes += 1
-            entry = {"host": request_host, "port": port, "scheme": scheme, "result": result}
+            entry = {"host": request_host, "port": port, "scheme": scheme}
             if request_host != host:
                 entry.update({"connect_host": host, "host_header": request_host, "sni": request_host})
+            cached = next((old for old in previous.get("probes", [])
+                           if old.get("result", {}).get("status")
+                           and all(old.get(field) == entry.get(field) for field in
+                                   ("host", "port", "scheme", "connect_host", "host_header", "sni"))), None)
+            if cached:
+                entry = {**cached, "observed_at": cached.get("observed_at", previous.get("observed_at", ""))}
+            elif probes < max_probes:
+                entry.update(result=_probe(request_host, **probe_kwargs), observed_at=_now())
+                probes += 1
+            else:
+                continue
             results.append(entry)
         if not results:
             continue
@@ -260,12 +273,13 @@ def verify(
         statuses = [entry["result"].get("status") for entry in results]
         if all(status is None for status in statuses):
             outcome = "unavailable"
-        elif any(status is None for status in statuses):
+        elif any(status is None for status in statuses) or len(results) < len(item["hosts"]):
             outcome = "partial"
         elif len(results) == 1:
             outcome = "host_observed"
         else:
             outcome = "response_difference" if len(fingerprints) > 1 else "no_response_difference"
+        completed += outcome not in {"unavailable", "partial"}
         observations.append({
             "schema_version": SCHEMA_VERSION,
             "kind": "host-collision-observation",
@@ -290,9 +304,10 @@ def verify(
         "schema_version": SCHEMA_VERSION,
         "kind": "host-collision-summary",
         "target": resolved,
-        "status": "complete" if observations or not selected else "partial",
+        "status": "complete" if completed == len(pending) else "partial",
         "candidate_count": len(rows),
         "selected_count": len(selected),
+        "remaining_count": len(pending) - completed,
         "skipped_existing": skipped_existing,
         "observation_count": len(observations),
         "probe_count": probes,

@@ -50,6 +50,7 @@ from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.autopilot_continuation import resolve_context_file, reject_unsupported_continuation
 from tools.credential_store import CredentialStore
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
+from tools.recon_gate import RECON_COLLECTIONS
 from runtime_exec import run_live_argv_command
 from tools.runtime_state import (
     RuntimePhaseBusy,
@@ -778,15 +779,19 @@ def setup_wordlists():
     log("ok", f"Wordlists ready in {WORDLIST_DIR}")
 
 
-def run_recon(domain, quick=False, deep=False, collect=""):
+def run_recon(domain, quick=False, deep=False, collect="", input_file=""):
     """Run recon engine on a classified target."""
     supplied_target = str(domain or "").strip()
     target_info = classify_target(domain)
     normalized_target = target_info["target"]
     recon_target = supplied_target if "://" in supplied_target else normalized_target
-    if collect and (collect not in {"katana", "ffuf"} or not deep or quick
+    if collect and (collect not in RECON_COLLECTIONS or not deep or quick
                     or target_info["kind"] in {"list", "cidr"}):
-        raise ValueError("Recon --collect requires deep Katana/FFUF on an existing single target")
+        raise ValueError("Recon --collect requires --deep and a single target")
+    if input_file:
+        if collect not in {"probe", "katana", "ffuf", "config", "ports", "js"}:
+            raise ValueError("--recon-input requires probe, katana, ffuf, config, ports or js collection")
+        input_file = str(Path(input_file).resolve(strict=True))
     list_count = 0
     if target_info["kind"] == "list":
         try:
@@ -820,6 +825,8 @@ def run_recon(domain, quick=False, deep=False, collect=""):
         command = ["bash", script, recon_target, recon_flag]
         if collect:
             command.extend(["--collect", collect])
+        if input_file:
+            command.extend(["--input", input_file])
         returncode = run_live_argv_command(
             command,
             cwd=BASE_DIR,
@@ -1120,6 +1127,7 @@ def _hunt_target_impl(
     scanner_skip="",
     ctf_mode=False,
     recon_collect="",
+    recon_input="",
 ):
     """Run the full hunt pipeline on a single canonical target."""
     target_info = classify_target(domain)
@@ -1158,7 +1166,7 @@ def _hunt_target_impl(
                         ctf_mode=ctf_mode,
                     )
                 if recon_collect:
-                    result["recon"] = run_recon(domain, deep=True, collect=recon_collect)
+                    result["recon"] = run_recon(domain, deep=True, collect=recon_collect, input_file=recon_input)
                 elif deep:
                     result["recon"] = run_recon(domain, quick=quick, deep=True)
                 else:
@@ -1292,13 +1300,24 @@ def hunt_target(
     ctf_mode=False,
     context_file=None,
     recon_collect="",
+    recon_input="",
 ):
     """Run one target pipeline while preventing duplicate long phases."""
     target_info = classify_target(domain)
     if recon_collect and (not deep or quick or not recon_only or scan_only
-                          or recon_collect not in {"katana", "ffuf"}
+                          or recon_collect not in RECON_COLLECTIONS
                           or target_info["kind"] in {"list", "cidr"}):
         raise ValueError("--recon-collect requires --deep --recon-only and a single target")
+    if recon_input:
+        if recon_collect not in {"probe", "katana", "ffuf", "config", "ports", "js"}:
+            raise ValueError("--recon-input requires probe, katana, ffuf, config, ports or js collection")
+        try:
+            path = Path(recon_input).resolve(strict=True)
+            with path.open(encoding="utf-8") as handle:
+                handle.read()
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"Cannot read --recon-input: {recon_input}") from exc
+        recon_input = str(path)
     canonical_target = target_info["target"]
     auth_session = _active_auth_session()
     context_file = resolve_context_file(context_file, auth_session.context_file)
@@ -1320,6 +1339,7 @@ def hunt_target(
         scanner_skip=scanner_skip,
         ctf_mode=ctf_mode,
         recon_collect=recon_collect,
+        recon_input=recon_input,
     )
 
 
@@ -1339,8 +1359,9 @@ Examples:
     parser.add_argument("--target", type=str, help="Specific target (domain, IP, CIDR, or primary-domain batch file) to hunt")
     parser.add_argument("--quick", action="store_true", help="Quick Recon and smaller bounded Nuclei origin batch")
     parser.add_argument("--recon-only", action="store_true", help="Only run reconnaissance")
-    parser.add_argument("--recon-collect", choices=("katana", "ffuf"), default="",
-                        help="Collect only the next deep Katana or FFUF batch from existing live inputs")
+    parser.add_argument("--recon-collect", choices=tuple(RECON_COLLECTIONS), default="",
+                        help="Run one deep collection stage; retain other evidence and progress")
+    parser.add_argument("--recon-input", default="", help="Probe candidates or selected collection inputs, one per line")
     parser.add_argument("--scan-only", action="store_true", help="Only run bounded upstream Nuclei over cached live inputs")
     parser.add_argument("--scanner-full", action="store_true", help="Use the larger bounded Nuclei origin batch even when Recon is quick")
     parser.add_argument(
@@ -1364,6 +1385,8 @@ Examples:
     )
     add_cli_args(parser, include_cookie=False, include_context=True)
     args = parser.parse_args()
+    if args.recon_input and not args.recon_collect:
+        parser.error("--recon-input requires --recon-collect")
     if args.recon_collect and (not args.target or not args.deep or args.quick
                               or not args.recon_only or args.scan_only or args.report_only
                               or args.status or args.setup_wordlists):
@@ -1449,6 +1472,7 @@ Examples:
                 ctf_mode=ctf_mode,
                 context_file=args.context_file,
                 recon_collect=args.recon_collect,
+                recon_input=args.recon_input,
             )
         except (RuntimePhaseBusy, StoreError, ValueError) as exc:
             log("warn", str(exc))

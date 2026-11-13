@@ -41,12 +41,12 @@ manual review lane.
 | `tools/openapi_semantics.py` | `api_specs/*`, `urls/api_endpoints.txt` | Review semantic auth boundaries; declarations remain leads, not findings |
 | API leak consolidation | `recon/<target>/exposure/api_leak_candidates.txt` | Review before scanner breadth; imported Postman/OpenAPI candidates can drive exact endpoint probes |
 | `porch-pirate` Postman search | `recon/<target>/exposure/api_leaks/postman_leaks.txt` | Look for workspace/collection URLs, environment names, tokens, and non-production API hosts |
-| `postleaksNg` | `recon/<target>/exposure/api_leaks/postleaks_urls.txt`, `postleaksNg.log`, `postleaksNg/` | Extract collection/spec URLs; select `/secrets-hunt TARGET --filesystem recon/<target>/exposure/api_leaks/` when the evidence needs it |
+| `postleaksNg` | `recon/<target>/exposure/api_leaks/postleaks_urls.txt`, `api_leaks/runs/*/postleaksNg{.log,/}` | Extract collection/spec URLs; select `/secrets-hunt TARGET --filesystem recon/<target>/exposure/api_leaks/` when the evidence needs it |
 | Osmedeus `SwaggerSpy` | `recon/<target>/exposure/api_leaks/swagger_leaks.txt` | Treat as API-spec discovery candidates; validate liveness and auth boundary before broad fuzzing |
 | Verified secret pass | `recon/<target>/exposure/api_leak_trufflehog_verified.jsonl` | Evidence for attribution/usability and follow-up validation; choose the concrete action from the observed surface and apply `rules/ccst/red-lines.md` |
 | `emailfinder` | `recon/<target>/exposure/identity_intel/emails.txt` | Seed tenant, reset-flow, invite, SSO, and username-format hypotheses |
 | `LeakSearch` | `recon/<target>/exposure/identity_intel/leaksearch.txt`, `summary.md` | Attribute hits to the target and derive identity/credential hypotheses for the next evidence-backed action |
-| `cloud_enum` | `recon/<target>/exposure/cloud/cloud_enum.txt`, `cloud_enum.log` | Treat as candidate cloud ownership evidence; pivot to `/cloud-recon` or minimal ownership checks |
+| `cloud_enum` | `recon/<target>/exposure/cloud/cloud_enum.txt`, `identity_intel/runs/*/cloud_enum.log` | Treat as candidate cloud ownership evidence; pivot to `/cloud-recon` or minimal ownership checks |
 | Generic asset relations | `recon/<target>/exposure/asset_relation_*` | Queue `scope-review`; keep external relations non-executable |
 | Host pivot response comparison | `recon/<target>/exposure/host_collision_observations.jsonl`, `host_collision_summary.json` | Compare only target-owned controls; a difference remains a candidate and requires independent validation |
 | Batch inventory | `recon/<list-key>/surface_inventory.txt`, `ai_handoff.md`, `batch_inventory.json` | Completed targets and source counts in completion order; select follow-up natively |

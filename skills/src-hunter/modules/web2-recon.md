@@ -3,8 +3,6 @@
 内部完整方法，按当前问题读取；不是独立原生 Skill，不自动启动执行或委派。
 返回 [src-hunter 调查主干](../SKILL.md)；恢复/写回仍归 `skills/runtime-protocol.md`。
 
-适用：Use when a target needs attack-surface discovery, surface review, or a bounded recon follow-up — it decides the next evidence-producing recon action from current target state (which lane, what artifact, what it answers). A decision layer, not a scanner recipe; the /recon command owns command execution and artifacts, and deterministic tools own collection, scope filtering, and resumable cursors.
-
 Choose the next evidence-producing recon action from the current target state.
 This is a decision layer, not a fixed scanner recipe. `/recon` remains the
 operator entrypoint and owns the command/artifact contract; deterministic tools
@@ -36,10 +34,10 @@ recovery requirements. Branches are alternatives, not a mandatory order.
 | Observed state | Preferred decision | Handoff |
 |---|---|---|
 | No active target or scope context | Establish the target record and stop before network work | `commands/target.md` / runtime protocol |
-| New/empty `/autopilot` target with no prior work or usable supplied evidence | Start target I/O with Recon under the invoking command's startup contract, retaining seed URL and auth/context | `commands/autopilot.md#shared-automation` |
+| New/empty `/autopilot` target with no prior work or usable supplied evidence | Apply the shared opening conditions, then incremental discovery below | `skills/autopilot-protocol.md#shared-automation` |
 | Existing target or usable supplied evidence, with missing or materially stale inventory | Compare available request/source/browser evidence and the current information gap; choose bounded collection only if useful | Native evidence or explicitly selected `/recon TARGET [--quick|--deep]` |
 | Inventory exists but the valuable surface is unclear | Refresh the bounded Surface view and ask one feature-level question | `/surface`, `tools/surface.py` |
-| Browser, JS, source, schema, or history names a missing host/path/parameter | Choose one evidence-linked expansion, not a generic dictionary | `tools/dns_expand.py --reason <evidence>`, focused FFUF, native Read/Grep |
+| Browser, JS, source, schema, or history names a missing host/path/parameter | Follow that lead while retaining broader unexplored inputs | `tools/dns_expand.py --reason <evidence>`, focused FFUF, native Read/Grep |
 | Authenticated API exposes object or role state | Compare the same object/action across owned actors before broad probes | `knowledge/playbooks/web2-evidence-contracts.md`, actor-pair evidence |
 | Upload, URL fetch, GraphQL, realtime, import/export, or payment evidence appears | Preserve the request shape and route to the matching card/validation lane | `/surface`, selected Knowledge card, `/validate` |
 | Exposure, component, source, or CI/CD artifact appears | Record provenance and test applicability before any active follow-up; a concrete framework/version fingerprint may justify current `/intel` research, chosen by Claude | `/intel`, source or CI/CD tool |
@@ -70,6 +68,34 @@ workflow state. Preserve unknowns and Scope boundaries when a prerequisite is mi
 
 Origin IP/range, ASN, SAN/CNAME, or edge/direct response differences are
 Host/SNI comparison candidates.
+
+### Incremental Discovery
+
+Keep complementary breadth in deep mode. FOFA supplies candidates; subfinder,
+assetfinder, certificates, available Chaos and historical URLs fill different gaps.
+Retain provider originals and source refs. Use the actual MCP schema; the bundled
+FOFA service returns at most 100 host/IP/port rows without paging, and its default
+200-only filter must be cleared for an overview. Missing tools remain explicit.
+
+Use `commands/recon.md#deep-collection-batches` to probe candidate hosts and exact
+URLs, then run discovery. DNS resolution filters wildcards; actual HTTP responses
+publish live entries. A search hit never becomes a live observation by itself.
+Review each published batch while slower sources finish; consume the terminal
+result before final stopping. Keep one Recon writer per target.
+
+| Available material | Next collection choices |
+|---|---|
+| New domains, services or historical URLs | DNS/HTTP confirmation; port batches on domain assets; retain scheme, port and source |
+| Distinct live applications | Katana, a general ffuf batch and config discovery; select different applications before repeatedly deepening one |
+| JS or interactive workflows | Read entry bundles; use Playwright for interaction and Chrome for Network/Console; follow dynamic chunks and SourceMaps when useful |
+| API/schema/config or organization context | OpenAPI, public API material, identity/cloud or source review as applicable; these need not wait for crawling/fuzzing |
+
+Choose the next batch using new hosts, routes, parameters, functions and unexplored
+inputs. General discovery needs no known vulnerability. A zero-result batch or
+similar-looking pages does not prove shared backends or complete coverage.
+Preserve unselected and failed inputs. Tool bounds limit one operation, not deep
+investigation. Existing puredns resolves candidates; DNS brute force and active
+hidden-parameter mining are separate methods, not implied by these stages.
 
 ## Local Question Selection
 
@@ -102,9 +128,8 @@ focused discovery section of `commands/recon.md`.
 
 ## Profile and Artifact Compatibility
 
-- Explicit `/recon` selects the existing full profile; `--quick` lowers cost and
-  `--deep` enables the deeper JS path. New/empty `/autopilot` targets without prior
-  work or usable supplied evidence start with Recon under `commands/autopilot.md#shared-automation`.
+- Explicit `/recon` retains complete execution; `--quick` lowers cost and
+  `--deep` enables deeper collection. Automatic opening follows the shared protocol.
   Existing targets' missing inventory or pending collection does not require a
   pipeline rerun; invalid cursors require owner repair.
 - Raw hosts, URLs, JS, parameters, and exposure observations remain lossless.

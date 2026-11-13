@@ -74,9 +74,9 @@ BBHUNT_ENABLE_UNWAF=1 python3 tools/hunt.py --target target.com --recon-only
 BBHUNT_ENABLE_UNWAF=1 BBHUNT_BATCH_SIZE=5 python3 tools/hunt.py --target targets.txt --recon-only
 ```
 
-Success signal:
+Available material:
 
-- Single target: `recon/<target>/live/urls.txt` or `recon/<target>/subdomains/all.txt` exists and has data.
+- Single target: inspect the exit result and `recon_manifest.jsonl`; live/subdomain file presence means material is available, not that every phase completed.
 - List target: each completed line has its own canonical `recon/<domain>/`;
   `recon/<list-stem>/` is the batch index and also contains grouped links
   `recon/<list-stem>/<domain> -> ../<domain>` for browsing by source list.
@@ -100,37 +100,65 @@ still reports its own collection result without starting an autonomous hunt.
 
 ## Deep collection batches
 
-Deep retains depth-3 Katana with JS/known-file discovery, but selects at most 5
-seeds per invocation. Integrated deep FFUF selects at most 5 targets and 512
-wordlist lines per target. Successful word pages advance the existing ledger;
-the target completes only after its last page. Failed pages retry as a unit.
-Quick/normal/full retain their existing default selection sizes and wordlists.
-
-After reviewing the current material, select another batch only when it helps
-the investigation. With an existing single-target live inventory, reuse the same
-target and auth/context through either local collector:
+Use one stage at a time through the existing target lock. Tool selection belongs
+in `skills/src-hunter/modules/web2-recon.md#incremental-discovery`.
 
 ```bash
-python3 tools/hunt.py --target target.com --recon-only --deep --recon-collect katana
+# FOFA/other source candidates: plain hosts, host:port or exact HTTP(S) URLs, one per line.
+python3 tools/hunt.py --target target.com --recon-only --deep --recon-collect probe --recon-input candidates.txt
+# Complementary subdomain + historical sources; publish live batches as sources complete.
+python3 tools/hunt.py --target target.com --recon-only --deep --recon-collect discover
+# One chosen application batch; omitted input uses the complete existing inventory.
+python3 tools/hunt.py --target target.com --recon-only --deep --recon-collect katana --recon-input selected-urls.txt
 python3 tools/hunt.py --target target.com --recon-only --deep --recon-collect ffuf
-# Equivalent direct entry, with the existing runtime lock:
-bash tools/recon_engine.sh target.com --deep --collect katana
+# Equivalent direct entry:
+bash tools/recon_engine.sh target.com --deep --collect probe --input candidates.txt
 ```
 
-These calls skip other active collectors and preserve live/JS evidence. They
-publish the selected collector's results and refresh derived views before
-returning. Batch-list/CIDR inputs and other profiles reject local collection.
-The initial deep invocation still runs the profile's other phases; this is not a
-streaming stage scheduler. Katana may still take its 300-second timeout on a
-complex seed, and slow FFUF pages may still time out under the existing budget.
+| Stage | Work and inputs |
+|---|---|
+| `discover` | Parallel subfinder/assetfinder/certificate/available Chaos and historical sources; DNS/HTTP confirmation as sources finish |
+| `probe` | Up to 100 pending host/service/URL inputs; puredns for bare domains, real httpx responses publish live |
+| `history` | gau/waymore/Wayback fallback and URL/parameter views, without crawling |
+| `katana`, `ffuf` | Existing live inventory; at most 5 seeds/targets, depth 3 with JS/known files or 512 words per target |
+| `ports`, `waf`, `origin` | Port batches, WAF sampling or opt-in origin discovery; exact URL/port targets keep their narrow behavior |
+| `js`, `config` | JS extraction/link analysis batches of 50/25 inputs, or up to 30 live origins for config discovery |
+| `api`, `openapi`, `identity` | Public API material and verification, OpenAPI/metadata, or identity/cloud sources; choose by applicability |
+| `verify` | Existing Host/SNI and route-kind candidate checks |
 
-`dir_fuzz_rotation.words_completed/words_remaining` describe dictionary positions,
-not tested vulnerability coverage. The latest FFUF summary describes this batch;
-previous raw results/summaries remain in `history/collectors/`. Remaining seeds
-or words are advisory: choose continuation, focused discovery, browser/source
-investigation or an explicit disposition from evidence; do not loop whole Recon
-merely to empty these counters. While collection runs, independent work remains
-allowed under Return To Autopilot.
+`--recon-input` supports `probe`, `katana`, `ffuf`, `config`, `ports`, and `js`.
+Probe adds candidates; JS adds and selects bundle URLs. Katana/ffuf/config/ports
+select from existing inventory without replacing it. Keep provider originals/source refs, using the existing
+asset-relation observation contract for provenance. The text file is execution
+input, not a FOFA parser or proof of a live host. Katana/ffuf/config/waf require
+existing live; other stages can start with their own inputs. Lists, CIDR and
+non-deep profiles retain their complete/page entries.
+
+Probe preserves raw httpx response records in `live/httpx_runs/` and merges confirmed URLs
+into live. Inputs without responses stay pending; zero-result DNS never bypasses wildcard
+filtering. New inputs preserve existing success progress. The response-backed
+selector keeps probe, port and existing collection progress; failed inputs and
+unselected tails remain available. Selected subsets do not erase other progress.
+Naabu records hosts with observed open ports; a silent host remains pending.
+Nmap uses its per-host XML scan records; missing records remain pending.
+JS extraction and link analysis retain separate successful-input progress and share
+saved responses. HTTP errors, missing analyzers and unconfirmed xnLinkFinder inputs
+remain pending; its exit code alone is insufficient. Explicit input order rotates
+past failed prefixes. Saved success applies to that URL and acquisition/auth context;
+unchanged URL content is not automatically revalidated on later calls.
+Explicit complete `/recon --deep` remains available.
+
+A successful exit describes this call. Missing/unrun phases and bounded remainder
+remain in the existing manifest; usable live material does not mean Recon is complete.
+A failure returns nonzero and preserves raw evidence. Katana/ffuf/config retain
+per-input receipts; a completed FFUF page advances only that page, with target
+completion after its final page. The latest summary describes this batch and old
+artifacts remain in history. These counters never establish vulnerability coverage.
+
+While a stage runs, use only published material for independent investigation;
+consume its terminal result before stopping. Do not launch a second Recon writer.
+The existing per-tool timeouts still apply; a batch can be slow even when other
+material is ready for investigation.
 
 ## AI-selected DNS expansion
 
@@ -151,7 +179,7 @@ python3 tools/dns_expand.py --target target.com \
 
 The tool bounds seeds/candidates/rate/time, uses `alterx`/`dnsgen` plus
 `puredns`, filters wildcard and off-target output, and merges only DNS-confirmed
-hosts. On new hosts, run `python3 tools/surface.py --target target.com --refresh`.
+hosts. On new hosts, use the probe stage above, then review the refreshed Surface.
 Do not trigger from host count alone or treat zero resolved names as broad DNS
 coverage.
 
@@ -308,7 +336,7 @@ The integrated `tools/recon_engine.sh` path may run, when available:
 - URL denoising: raw collector output is staged, then atomically published as the filtered Active `urls/all.txt`; distinct object/parameter instances are retained by default, and `*_filtered.txt` remains a compatibility projection
 - Storage guard: raw URL union is kept under `urls/raw/` until Closure, then gzip-compressed with collector sources; bounded `filter.log` samples and `filter_summary.json` retain the counts/hash without duplicating the corpus
 - JS/API extraction: quick/normal 保留完整 JS inventory 并生成多类别有界 `js/deep_candidates.txt`，但不主动请求 bundle；full/deep 仅从 `js/request_targets.txt` 使用有界、限速、scope-filtered 的 xnLinkFinder，失败、不兼容 scope 或认证上下文回退逐 URL LinkFinder；所有 profile 都保留 raw backstop
-- bounded directory/parameter fuzzing and config discovery with timeout guards
+- bounded directory fuzzing, URL parameter extraction and config discovery with timeout guards
 - exposure candidates: API docs, config files, cloud storage, S3 buckets, third-party hosted assets
 - routing candidates: 从已有 origin/shared-IP/CNAME/certificate（若 artifact 已包含）、path/schema 事实及可选通用资产关系 observation 生成 Host/SNI、AI/LLM 与外部资产关系中性候选；候选生成后仅对高置信且当前 Scope 内的 Host pivot 做一次有界只读响应差异观察，AI 资产仍由后续专项路线验证
 - API leak detection: `porch-pirate`, `postleaksNg`, Osmedeus `SwaggerSpy`, plus bounded `trufflehog` verified-secret pass
@@ -343,6 +371,8 @@ recon/<target>/
 ├── recon_manifest.jsonl
 ├── subdomains/all.txt
 ├── live/httpx_full.txt
+├── live/httpx_runs/                    # httpx response records per execution; no response bodies
+├── live/probe_state.json               # derived input progress
 ├── live/urls.txt
 ├── live/discovery_hosts.txt
 ├── ports/
@@ -364,6 +394,7 @@ recon/<target>/
 ├── urls/katana_runs/*.jsonl             # per-run request/response/error receipts
 ├── api_specs/metadata_state.json        # platform metadata rotation, not tested coverage
 ├── js/endpoints.txt
+├── js/runs/                           # per-run extraction originals
 ├── js/endpoint_sources.jsonl             # source JS URL and unbound path; document base is required before URL binding
 ├── js/potential_secrets.txt
 ├── js/deep_candidates.txt
@@ -375,6 +406,8 @@ recon/<target>/
     ├── api_doc_candidates.txt
     ├── api_leak_candidates.txt
     ├── api_leak_trufflehog_verified.jsonl
+    ├── api_leaks/runs/                 # API source originals and logs
+    ├── identity_intel/runs/            # identity/cloud source originals and logs
     ├── cloud_storage_candidates.txt
     ├── s3_bucket_candidates.txt
     ├── external_service_hosts.txt

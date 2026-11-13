@@ -3,10 +3,15 @@
 import gzip
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -30,6 +35,12 @@ def _run_shell(root, names, body):
     )
 
 
+def _stub(root, name, body):
+    path = root.parent / "home/go/bin" / name
+    path.write_text(f"#!{sys.executable}\n" + body)
+    path.chmod(0o700)
+
+
 @pytest.mark.parametrize("failure", ["none", "read", "publish"])
 def test_raw_union_preserves_old_archive_and_staging_on_failure(tmp_path, failure):
     old = tmp_path / "all.txt.gz"
@@ -43,7 +54,7 @@ def test_raw_union_preserves_old_archive_and_staging_on_failure(tmp_path, failur
         "publish": 'mv() { echo "publication interrupted" >&2; return 1; }\n',
     }[failure]
     result = _run_shell(
-        tmp_path, ["append_artifact", "publish_raw_url_archive"],
+        tmp_path, ["append_artifact", "publish_artifact_union", "publish_raw_url_archive"],
         injected + 'RAW_URLS_ARCHIVE="$PWD/all.txt"\nRAW_URLS_STAGING="$PWD/current.txt"\n'
         "publish_raw_url_archive",
     )
@@ -276,6 +287,7 @@ def test_collection_inventory_changes_preserve_completed_and_rotate_failures(col
     plan = select([c, b, a])
     after = json.loads(kwargs["state_path"].read_text())
     assert plan["completed_count"] == 1 and plan["selected"] == [{"url": b}]
+
     assert after["collection_fingerprint"] == before["collection_fingerprint"]
     assert after["inventory_fingerprint"] != before["inventory_fingerprint"]
     record(b, "partial")
@@ -286,6 +298,588 @@ def test_collection_inventory_changes_preserve_completed_and_rotate_failures(col
     assert set(json.loads(kwargs["state_path"].read_text())["completed"]) == {c}
     record(b)
     assert select([b, c])["exhausted"] is True
+
+
+@pytest.mark.parametrize("origins_only", [False, True])
+def test_selected_collection_keeps_unselected_inventory_and_progress(collection, origins_only):
+    select, record, kwargs = collection
+    a, b, c = [f"https://{name}.collection.test" for name in "abc"]
+    preferred = [c + "/path" if origins_only else c]
+    kwargs["origins_only"] = origins_only
+    assert select([a, b, c], preferred=preferred)["selected"] == [{"url": c}]
+    record(c)
+    plan = select([a, b, c], preferred=preferred)
+    assert plan["selected"] == [] and plan["exhausted"] is False
+    assert plan["eligible_count"] == 3 and plan["pending_count"] == 2
+    assert select([a, b, c])["selected"] == [{"url": a}]
+    assert c in json.loads(kwargs["state_path"].read_text())["completed"]
+
+
+def test_preferred_collection_rotates_failed_prefix_past_completed_anchor(collection):
+    select, record, kwargs = collection
+    a, b, c = [f"https://collection.test/{name}.js" for name in "abc"]
+    preferred = [c, a, c, b]
+    assert select([a, b, c], preferred=preferred)["selected"] == [{"url": c}]
+    record(c, "partial")
+    assert select([a, b, c], preferred=preferred)["selected"] == [{"url": a}]
+    record(a)
+    # a is completed, but remains the position from which explicit ordering resumes.
+    assert select([a, b, c], preferred=preferred)["selected"] == [{"url": b}]
+    record(b)
+    assert select([a, b, c], preferred=preferred)["selected"] == [{"url": c}]
+    record(c)
+    assert select([a, b, c], preferred=preferred)["exhausted"] is True
+
+
+@pytest.fixture
+def probe_checkout(tmp_path):
+    root = tmp_path / "source"
+    tools = root / "tools"
+    tools.mkdir(parents=True)
+    for source in (REPO / "tools").glob("*.py"):
+        shutil.copy2(source, tools / source.name)
+    for name in ("recon_engine.sh", "_auth_helper.sh"):
+        shutil.copy2(REPO / "tools" / name, tools / name)
+    memory = root / "memory"
+    memory.mkdir()
+    for source in (REPO / "memory").glob("*.py"):
+        shutil.copy2(source, memory / source.name)
+    target = "probe.test"
+    TargetStore(root, target).initialize()
+    home = tmp_path / "home"
+    binaries = home / "go/bin"
+    binaries.mkdir(parents=True)
+    script = f"#!{sys.executable}\n" + r'''
+import json, os, sys
+from pathlib import Path
+root = Path(os.environ['RECON_TEST_ROOT'])
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+if '-version' in args:
+    print('projectdiscovery httpx'); raise SystemExit(0)
+if name == 'puredns':
+    source = Path(args[1]); output = Path(args[args.index('--write') + 1])
+else:
+    source = Path(args[args.index('-l') + 1]); output = Path(args[args.index('-o') + 1])
+values = source.read_text().splitlines()
+with (root / 'calls.jsonl').open('a') as handle:
+    handle.write(json.dumps({'tool': name, 'inputs': values}) + '\n')
+if (root / ('fail-' + name)).exists():
+    raise SystemExit(124)
+if name == 'puredns':
+    output.write_text(''.join(value + '\n' for value in values if not value.startswith('wild.')))
+else:
+    output.write_text(''.join((value if '://' in value else 'https://' + value) + ' [200] [10] [test]\n' for value in values))
+'''
+    for name in ("puredns", "httpx"):
+        path = binaries / name
+        path.write_text(script)
+        path.chmod(0o700)
+    # Fail visibly if a supposedly local probe accidentally executes another collector.
+    for name in ("subfinder", "assetfinder", "gau", "waymore", "katana", "ffuf", "naabu", "nmap", "curl",
+                 "porch-pirate", "postleaksNg", "trufflehog", "emailfinder", "cloud_enum"):
+        path = binaries / name
+        path.write_text(f"#!{sys.executable}\nfrom pathlib import Path\n"
+                        f"Path({str(root / 'unexpected-tool')!r}).write_text({name!r})\nraise SystemExit(99)\n")
+        path.chmod(0o700)
+    env = _env(home) | {"RECON_TEST_ROOT": str(root), "BBHUNT_RECON_POST_COMPRESS": "0"}
+
+    def run(stage="probe", input_file=None, expected=0, background=False, target_value=None, **extra_env):
+        command = ["bash", str(tools / "recon_engine.sh"), target_value or target, "--deep", "--collect", stage]
+        if input_file:
+            command += ["--input", str(input_file)]
+        if background:
+            with (root / "run.log").open("w") as log:
+                return subprocess.Popen(command, cwd=root, env=env | extra_env, text=True,
+                                        stdout=log, stderr=subprocess.STDOUT)
+        result = subprocess.run(command, cwd=root, env=env | extra_env, text=True, capture_output=True, timeout=25)
+        assert result.returncode == expected, result.stdout + result.stderr
+        assert not (root / "unexpected-tool").exists()
+        return result
+
+    return root, target, run
+
+
+def test_probe_entry_merges_actual_live_and_retries_only_pending_inputs(probe_checkout):
+    root, target, run = probe_checkout
+    recon = root / "recon" / target
+    live = recon / "live"
+    candidates = root / "fofa candidates.txt"
+    candidates.write_text("https://probe.test:8443/login?next=%2Fhome\na.probe.test\nhttps://outside.test/\n")
+    run(input_file=candidates)
+    first = set((live / "urls.txt").read_text().splitlines())
+    assert first == {"https://probe.test", "https://a.probe.test", "https://probe.test:8443/login?next=%2Fhome"}
+    first_calls = (root / "calls.jsonl").read_text()
+    assert any(path.stat().st_size for path in (live / "httpx_runs").glob("*.txt"))
+    run(input_file=candidates)
+    assert (root / "calls.jsonl").read_text() == first_calls
+    candidates.write_text(candidates.read_text() + "b.probe.test\n")
+    (root / "fail-httpx").touch()
+    run(input_file=candidates, expected=75)
+    assert set((live / "urls.txt").read_text().splitlines()) == first
+    (root / "fail-httpx").unlink()
+    run(input_file=candidates)
+    assert set((live / "urls.txt").read_text().splitlines()) == first | {"https://b.probe.test"}
+    calls = [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
+    assert calls[-1] == {"tool": "httpx", "inputs": ["b.probe.test"]}
+    candidates.write_text(candidates.read_text() + "wild.probe.test\n")
+    run(input_file=candidates)
+    assert [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()][-1] == {
+        "tool": "puredns", "inputs": ["wild.probe.test"]}
+    progress = json.loads((live / "probe_state.json").read_text())
+    assert "wild.probe.test" not in progress["completed"]
+    rows = [json.loads(line) for line in (recon / "recon_manifest.jsonl").read_text().splitlines()]
+    latest = {row.get("phase"): row for row in rows if row["record_type"] == "recon_phase"}
+    assert latest["run_budget"]["status"] == "ok"
+    assert latest["dir_fuzz"]["status"] == latest["url_collection"]["status"] == "not_run"
+    assert latest["http_probing"]["gate"]["bounded"]["remaining"] == 1
+
+
+def test_httpx_receipts_do_not_promote_search_or_unselected_urls(tmp_path):
+    (tmp_path / "live").mkdir()
+    canonical = tmp_path / "live/httpx_full.txt"
+    canonical.write_text("https://old.test [200]\n")
+    capture, seeds, results = (tmp_path / name for name in ("raw.txt", "seeds.txt", "results.tsv"))
+    seeds.write_text("https://selected.test:8443/path\n")
+    for value in ("https://selected.test:8443/path", "https://outside.test [200]",
+                  "https://selected.test/path [200]", "https://selected.test:8443/path/ [200]"):
+        capture.write_text(value + "\n")
+        with pytest.raises(ValueError):
+            ReconAdapter(tmp_path).publish_httpx_receipts(capture, seeds, results, 0)
+        assert canonical.read_text() == "https://old.test [200]\n"
+        assert not results.exists()
+
+
+def test_httpx_receipts_accept_ipv6_without_parsing_host_as_status(tmp_path):
+    capture, seeds, results = (tmp_path / name for name in ("raw", "seeds", "results"))
+    url = "http://[::1]:8080/path?x=1"
+    capture.write_text(url + " [200] [8] [Page]\n")
+    seeds.write_text(url + "\n")
+    ReconAdapter(tmp_path).publish_httpx_receipts(capture, seeds, results, 0)
+    assert results.read_text() == url + "\tok\n"
+    assert (tmp_path / "live/urls.txt").read_text() == url + "\n"
+
+
+def test_discover_publishes_live_before_slow_source_finishes(probe_checkout):
+    root, target, run = probe_checkout
+    script = r'''
+import json, os, sys, time
+from pathlib import Path
+root = Path(os.environ['RECON_TEST_ROOT'])
+name, args = Path(sys.argv[0]).name, sys.argv[1:]
+if name == 'assetfinder':
+    (root / 'slow.started').touch()
+    deadline = time.monotonic() + 20
+    while not (root / 'release').exists() and time.monotonic() < deadline:
+        time.sleep(.02)
+    print('slow.probe.test')
+elif name == 'subfinder':
+    Path(args[args.index('-o') + 1]).write_text('fast.probe.test\n')
+elif name == 'gau':
+    Path(args[args.index('--o') + 1]).write_text('https://fast.probe.test/old?k=v\n')
+elif name == 'waymore':
+    Path(args[args.index('-oU') + 1]).write_text('')
+elif name == 'curl':
+    print('[]' if any('crt.sh' in arg for arg in args) else '')
+'''
+    for name in ("subfinder", "assetfinder", "gau", "waymore", "curl"):
+        _stub(root, name, script)
+    proc = run("discover", background=True)
+    live = root / "recon" / target / "live/urls.txt"
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and proc.poll() is None:
+            if live.is_file() and "https://fast.probe.test" in live.read_text():
+                break
+            time.sleep(.02)
+        assert (root / "slow.started").exists()
+        assert proc.poll() is None, (root / "run.log").read_text()
+        assert "https://fast.probe.test" in live.read_text()
+        assert "https://slow.probe.test" not in live.read_text()
+    finally:
+        (root / "release").touch()
+        proc.wait(timeout=25)
+    assert proc.returncode == 0, (root / "run.log").read_text()
+    assert "https://slow.probe.test" in live.read_text()
+    assert not (root / "unexpected-tool").exists()
+
+
+def test_discover_probe_failure_stops_collector_tree(tmp_path):
+    result = _run_shell(tmp_path, ["append_artifact", "archive_collector_artifact", "run_collector_task",
+                                  "start_collector", "wait_collector_group", "cleanup_collectors", "artifact_line_count"], r'''
+RECON_DIR="$PWD"
+RECON_COLLECT=discover
+TARGET_KIND=domain
+COLLECTOR_PIDS=(); COLLECTOR_NAMES=(); COLLECTOR_ARTIFACTS=()
+COLLECTOR_ARTIFACT_LABELS=(); COLLECTOR_META_FILES=()
+log_step() { :; }; log_done() { :; }; log_warn() { :; }
+record_recon_collector() { printf '%s:%s\n' "$1" "$2" >> "$PWD/receipts"; }
+mkdir -p subdomains
+: > subdomains/all.txt
+merge_discovery_candidates() { printf 'fast.test\n' > subdomains/all.txt; }
+run_http_probe() { return 42; }
+fast() { echo fast > "$1"; }
+slow() { echo raw > "$1"; sleep .5; echo orphan > "$PWD/late-write"; }
+trap 'code=$?; cleanup_collectors; exit "$code"' EXIT
+start_collector fast "$PWD/fast.txt" fast.txt fast
+start_collector slow "$PWD/slow.txt" slow.txt slow
+wait_collector_group
+''')
+    assert result.returncode == 42, result.stdout + result.stderr
+    time.sleep(.6)
+    assert not (tmp_path / "late-write").exists()
+    assert "slow:partial" in (tmp_path / "receipts").read_text()
+    assert any(path.read_text() == "raw\n" for path in tmp_path.glob(".slow.txt.collector.*"))
+
+
+def test_ports_fallback_candidates_reenter_probe_and_keep_progress(probe_checkout):
+    root, target, run = probe_checkout
+    script = r'''
+import json, os, sys
+from pathlib import Path
+root = Path(os.environ['RECON_TEST_ROOT'])
+name, args = Path(sys.argv[0]).name, sys.argv[1:]
+flag = '-list' if name == 'naabu' else '-iL'
+inputs = Path(args[args.index(flag) + 1]).read_text().splitlines()
+with (root / 'ports_calls.jsonl').open('a') as log:
+    log.write(json.dumps({'tool': name, 'inputs': inputs}) + '\n')
+inputs = [host for host in inputs if not host.startswith('silent.')]
+if name == 'naabu':
+    if (root / 'naabu-ok').exists():
+        Path(args[args.index('-o') + 1]).write_text(''.join(host + ':8443\n' for host in inputs))
+        raise SystemExit(0)
+    raise SystemExit(124)
+if (root / 'fail-nmap').exists():
+    raise SystemExit(124)
+for flag in ('-oN', '-oG'):
+    Path(args[args.index(flag) + 1]).write_text(''.join(
+        'Host: 192.0.2.10 ()\tPorts: 8443/open/tcp//https///\n' for host in inputs))
+Path(args[args.index('-oX') + 1]).write_text('<nmaprun>' + ''.join(
+    f'<host><address addr="192.0.2.10"/><hostnames><hostname name="{host}" type="user"/></hostnames><ports><port protocol="tcp" portid="8443"/></ports></host>'
+    for host in inputs) + '</nmaprun>')
+'''
+    for name in ("naabu", "nmap"):
+        _stub(root, name, script)
+    recon = root / "recon" / target
+    (recon / "subdomains").mkdir(parents=True)
+    (recon / "subdomains/all.txt").write_text("later.probe.test\n")
+    preferred = root / "selected.txt"
+    preferred.write_text("https://probe.test\n")
+    run("ports", input_file=preferred)
+    calls = [json.loads(line) for line in (root / "ports_calls.jsonl").read_text().splitlines()]
+    assert calls == [{"tool": tool, "inputs": [target]} for tool in ("naabu", "nmap")]
+    assert "https://probe.test:8443/" in (recon / "urls/port_candidates.txt").read_text()
+    run("probe")
+    assert "https://probe.test:8443/" in (recon / "live/urls.txt").read_text()
+    original = (recon / "ports/open_host_ports.txt").read_text()
+    (root / "fail-nmap").touch()
+    run("ports", expected=75)
+    assert (recon / "ports/open_host_ports.txt").read_text() == original
+    assert "later.probe.test" not in json.loads((recon / "ports/scan_state.json").read_text())["completed"]
+    (root / "fail-nmap").unlink()
+    (root / "naabu-ok").touch()
+    run("ports")
+    assert json.loads((root / "ports_calls.jsonl").read_text().splitlines()[-1]) == {
+        "tool": "naabu", "inputs": ["later.probe.test"]}
+    assert set(json.loads((recon / "ports/scan_state.json").read_text())["completed"]) == {target, "later.probe.test"}
+    assert "later.probe.test:8443" in (recon / "ports/open_host_ports.txt").read_text()
+    previous = (root / "ports_calls.jsonl").read_text()
+    run("ports")
+    assert (root / "ports_calls.jsonl").read_text() == previous
+    with (recon / "subdomains/all.txt").open("a") as handle:
+        handle.write("silent.probe.test\n")
+    run("ports")
+    assert "silent.probe.test" not in json.loads((recon / "ports/scan_state.json").read_text())["completed"]
+    (root / "naabu-ok").unlink()
+    run("ports")
+    assert "silent.probe.test" not in json.loads((recon / "ports/scan_state.json").read_text())["completed"]
+
+
+def test_js_input_and_failed_retry_preserve_endpoints_and_raw_candidates(probe_checkout):
+    root, target, run = probe_checkout
+    script = r'''
+import os, sys
+from pathlib import Path
+root = Path(os.environ['RECON_TEST_ROOT'])
+if (root / 'fail-curl').exists():
+    raise SystemExit(28)
+Path(sys.argv[sys.argv.index('-o') + 1]).write_text('const path = "/api/retained";')
+print('200', end='')
+'''
+    _stub(root, "curl", script)
+    _stub(root, "linkfinder", "print('/api/retained')\n")
+    supplied = root / "js.txt"
+    supplied.write_text("https://probe.test/app.js\n")
+    raw = root / "recon" / target / "urls/raw"
+    raw.mkdir(parents=True)
+    (raw / "all.txt.gz").write_bytes(gzip.compress(b"https://bucket.s3.amazonaws.com/path\n"))
+    run("js", input_file=supplied)
+    recon = root / "recon" / target
+    endpoints = recon / "js/endpoints.txt"
+    assert endpoints.read_text() == "/api/retained\n"
+    assert "bucket" in (recon / "exposure/s3_bucket_candidates.txt").read_text().splitlines()
+    (root / "fail-curl").touch()
+    supplied.write_text(supplied.read_text() + "https://probe.test/new.js\n")
+    run("js", input_file=supplied, expected=75)
+    assert endpoints.read_text() == "/api/retained\n"
+    assert any(path.stat().st_size for path in (recon / "js/runs").glob("*/endpoints_raw.txt"))
+    assert "bucket" in (recon / "exposure/s3_bucket_candidates.txt").read_text().splitlines()
+
+
+def test_js_batches_resume_both_analyses_without_repeating_successful_downloads(probe_checkout):
+    root, target, run = probe_checkout
+    _stub(root, "curl", r'''
+import os, sys
+from pathlib import Path
+root = Path(os.environ['RECON_TEST_ROOT'])
+url = next(value for value in sys.argv if value.startswith('https://'))
+with (root / 'js_downloads.txt').open('a') as handle: handle.write(url + '\n')
+status = 503 if url.endswith('/00.js') and not (root / 'recovered').exists() else 200
+name = url.rsplit('/', 1)[-1].split('.')[0]
+Path(sys.argv[sys.argv.index('-o') + 1]).write_text('const route="/api/' + name + '";')
+print(status, end='')
+''')
+    _stub(root, "linkfinder", r'''
+import os, re, sys
+from pathlib import Path
+root = Path(os.environ['RECON_TEST_ROOT'])
+body = Path(sys.argv[sys.argv.index('-i') + 1]).read_text()
+with (root / 'js_link_calls.txt').open('a') as handle: handle.write(body + '\n')
+print('\n'.join(re.findall(r'"(/api/[^" ]+)"', body)))
+''')
+    supplied = root / "js.txt"
+    urls = [f"https://probe.test/{index:02}.js" for index in range(53)]
+    supplied.write_text("\n".join(urls) + "\n")
+    run("js", input_file=supplied, expected=75)
+    recon = root / "recon" / target
+    def done(name):
+        return set(json.loads((recon / f"js/{name}_state.json").read_text())["completed"])
+    assert len(done("extract")) == 49 and len(done("links")) == 24
+    (root / "recovered").touch()
+    run("js", input_file=supplied)
+    assert len(done("extract")) == 53 and len(done("links")) == 49
+    run("js", input_file=supplied)
+    assert done("links") == done("extract") == set(urls)
+    downloads = (root / "js_downloads.txt").read_text().splitlines()
+    assert len(downloads) == 54 and downloads.count(urls[0]) == 2
+    assert len((root / "js_link_calls.txt").read_text().splitlines()) == 53
+    assert all(downloads.count(url) == 1 for url in urls[1:])
+    run("js", input_file=supplied)
+    assert (root / "js_downloads.txt").read_text().splitlines() == downloads
+    assert len((root / "js_link_calls.txt").read_text().splitlines()) == 53
+    supplied.write_text("https://probe.test/new.js\n")
+    run("js", input_file=supplied)
+    assert done("links") == done("extract") == set(urls) | {"https://probe.test/new.js"}
+    assert "/api/52" in (recon / "js/endpoints.txt").read_text()
+    rows = [json.loads(line) for line in (recon / "recon_manifest.jsonl").read_text().splitlines()]
+    last = [row for row in rows if row.get("phase") == "js_analysis"][-1]
+    assert "selected=54; remaining=0" in last["note"]
+
+
+@pytest.mark.parametrize("fault", ["none", "unfinished", "nonzero"])
+def test_js_xn_terminal_receipts_and_legacy_fallback(probe_checkout, fault):
+    root, target, run = probe_checkout
+    _stub(root, "xnLinkFinder", r'''
+import os, sys
+from pathlib import Path
+args = sys.argv[1:]
+assert not sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()
+assert '-i' not in args and all(flag in args for flag in ('-sf', '-all', '-vv', '-ow'))
+assert args[args.index('-d') + 1] == '1'
+assert args[args.index('-mrs') + 1] == '20' and int(args[args.index('-rl') + 1]) > 0
+assert Path(args[args.index('-sf') + 1]).read_text().splitlines() == ['probe.test']
+assert sys.stdin.read() == 'https://probe.test/a.js\nhttps://probe.test/b.js\n'
+raw = Path(args[args.index('-o') + 1])
+raw.write_text('/api/xn\nhttps://probe.test.evil.invalid/ignored\n')
+print('Response 200: https://probe.test/a.js')
+print('Response 503: https://probe.test/b.js')
+if os.environ['XN_FAULT'] != 'unfinished':
+    print('Potential unique links found for <stdin>: 2')
+    print('Links successfully written to file ' + str(raw))
+raise SystemExit(1 if os.environ['XN_FAULT'] == 'nonzero' else 0)
+''')
+    _stub(root, "curl", r'''
+import sys
+from pathlib import Path
+url = next(arg for arg in sys.argv if arg.startswith('https://'))
+Path(sys.argv[sys.argv.index('-o') + 1]).write_text(url)
+print('200', end='')
+''')
+    _stub(root, "linkfinder", r'''
+import os, sys
+from pathlib import Path
+body = Path(sys.argv[sys.argv.index('-i') + 1]).read_text()
+with Path(os.environ['RECON_TEST_ROOT'], 'legacy_calls.txt').open('a') as log:
+    log.write(body + '\n')
+print('/api/legacy/' + body.rsplit('/', 1)[-1])
+''')
+    seeds = root / "js.txt"
+    urls = ["https://probe.test/a.js", "https://probe.test/b.js"]
+    seeds.write_text("\n".join(urls) + "\n")
+    run("js", input_file=seeds, XN_FAULT=fault, expected=75)
+    js = root / "recon" / target / "js"
+    capture = next((js / "runs").iterdir())
+    assert (capture / "linkfinder_raw.txt.upstream").read_text().endswith("evil.invalid/ignored\n")
+    assert "Response 200:" in (capture / "linkfinder_raw.txt.log").read_text()
+    expected = urls[1:] if fault == "none" else urls
+    assert (root / "legacy_calls.txt").read_text().splitlines() == expected
+    assert set((js / "linkfinder_endpoints.txt").read_text().splitlines()) == {
+        "/api/xn", *("/api/legacy/" + url.rsplit("/", 1)[-1] for url in expected),
+    }
+    assert set(json.loads((js / "links_state.json").read_text())["completed"]) == set(urls)
+    rows = [json.loads(line) for line in (js.parent / "recon_manifest.jsonl").read_text().splitlines()]
+    assert [row for row in rows if row.get("phase") == "js_analysis"][-1]["status"] == "partial"
+
+
+def test_js_auth_change_does_not_reuse_previous_identity_response(probe_checkout):
+    root, target, run = probe_checkout
+    _stub(root, "curl", r'''
+import os, sys
+from pathlib import Path
+identity = os.environ['BBHUNT_SESSION_ID']
+assert 'X-Fixture-Actor: ' + identity in sys.argv
+Path(sys.argv[sys.argv.index('-o') + 1]).write_text('"/api/' + identity + '"')
+with Path(os.environ['RECON_TEST_ROOT'], 'identities.txt').open('a') as log:
+    log.write(identity + '\n')
+print('200', end='')
+''')
+    _stub(root, "linkfinder", "import sys\nfrom pathlib import Path\n"
+          "print(Path(sys.argv[sys.argv.index('-i') + 1]).read_text().strip(chr(34)))\n")
+    seeds = root / "js.txt"
+    seeds.write_text("https://probe.test/a.js\n")
+    for identity in ("one", "one", "two"):
+        run("js", input_file=seeds, BBHUNT_SESSION_ID=identity,
+            BBHUNT_AUTH_HEADERS="X-Fixture-Actor: " + identity,
+            BBHUNT_AUTH_ORIGINS="https://probe.test")
+    assert (root / "identities.txt").read_text().splitlines() == ["one", "two"]
+    js = root / "recon" / target / "js"
+    assert set((js / "linkfinder_endpoints.txt").read_text().splitlines()) == {"/api/one", "/api/two"}
+    cached = list((js / "responses").glob("*.js"))
+    assert {path.read_text() for path in cached} == {'"/api/one"', '"/api/two"'}
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in cached)
+
+
+def test_js_publication_failure_keeps_raw_without_completing_batch(probe_checkout):
+    root, target, run = probe_checkout
+    _stub(root, "curl", "import sys\nfrom pathlib import Path\n"
+          "Path(sys.argv[sys.argv.index('-o') + 1]).write_text('\"/api/new\"')\nprint('200', end='')\n")
+    _stub(root, "linkfinder", "print('/api/new')\n")
+    _stub(root, "mv", r'''
+import os, sys
+if sys.argv[-1].endswith('/js/endpoints.txt'):
+    raise SystemExit(42)
+os.execv('/bin/mv', ['/bin/mv', *sys.argv[1:]])
+''')
+    seeds = root / "js.txt"
+    seeds.write_text("https://probe.test/a.js\n")
+    js = root / "recon" / target / "js"
+    js.mkdir(parents=True)
+    (js / "endpoints.txt").write_text("/api/retained\n")
+    run("js", input_file=seeds, expected=1)
+    assert (js / "endpoints.txt").read_text() == "/api/retained\n"
+    assert any("/api/new" in path.read_text() for path in (js / "runs").glob("*/endpoints_raw.txt"))
+    for name in ("extract", "links"):
+        assert not json.loads((js / f"{name}_state.json").read_text())["completed"]
+
+
+@pytest.mark.parametrize("fault", ["none", "empty", "no_log", "no_finish", "analysis_error", "timeout"])
+def test_xnlinkfinder_receipts_require_response_and_finished_analysis(tmp_path, fault):
+    seeds, raw, capture, output, results = [tmp_path / name for name in ("seeds", "raw", "log", "links", "results")]
+    a, b = "https://xn.test/a.js", "https://xn.test/b.js"
+    seeds.write_text(a + "\n" + b + "\n")
+    raw.write_text("" if fault == "empty" else "/api/items\nhttps://other.test/ignored\n")
+    log = f"\x1b[32mResponse 200: {a}\x1b[0m\nResponse 503: {b}\n"
+    if fault != "no_finish":
+        log += "Potential unique links found for <stdin>: 1\n"
+        log += ("No links were found so nothing written to file.\n" if fault == "empty"
+                else f"Links successfully written to file {raw}\n")
+    if fault == "analysis_error": log += "ERROR getResponseLinks: incomplete parsing\n"
+    capture.write_text("" if fault == "no_log" else log)
+    assert ReconAdapter(tmp_path).publish_xnlinkfinder_receipts(
+        capture, seeds, raw, output, results, 124 if fault == "timeout" else 0, "xn.test") is False
+    expected = "ok" if fault in {"none", "empty"} else "partial"
+    assert results.read_text() == f"{a}\t{expected}\n{b}\tpartial\n"
+    assert output.read_text() == ("" if fault == "empty" else "/api/items\n")
+
+
+@pytest.mark.parametrize("stage", ["", "history"])
+def test_url_view_keeps_explicit_js_inventory_and_progress(tmp_path, collection, stage):
+    select, record, _ = collection
+    supplied, new = "https://collection.test/supplied.js", "https://collection.test/new.js"
+    urls = tmp_path / "urls"
+    urls.mkdir()
+    (urls / "all.txt").write_text(new + "\nhttps://collection.test/\n")
+    (urls / "js_files.txt").write_text(supplied + "\n")
+    select([supplied])
+    record(supplied)
+    result = _run_shell(tmp_path, ["append_artifact", "publish_artifact_union", "publish_url_view"],
+                        f'RECON_COLLECT={shlex.quote(stage)}\nRECON_DIR="$PWD"\n'
+                        'publish_url_view "$PWD/urls/all.txt" "$PWD/urls/js_files.txt" "\\.js$"')
+    assert result.returncode == 0, result.stderr
+    inventory = (urls / "js_files.txt").read_text().splitlines()
+    assert inventory == [supplied, new]
+    plan = select(inventory)
+    assert plan["completed_count"] == 1 and plan["selected"] == [{"url": new}]
+
+
+@pytest.mark.parametrize("stage,files,tools", [
+    ("identity", ("identity_intel/emails.txt", "identity_intel/leaksearch.txt", "cloud/cloud_enum.txt"),
+     ("emailfinder", "cloud_enum")),
+    ("api", ("api_leak_candidates.txt", "api_leak_trufflehog_verified.jsonl", "api_leaks/postman_leaks.txt"),
+     ("porch-pirate", "postleaksNg", "trufflehog")),
+])
+def test_optional_collection_failure_retains_prior_artifacts(probe_checkout, stage, files, tools):
+    root, target, run = probe_checkout
+    for name in tools:
+        _stub(root, name, "raise SystemExit(124)\n")
+    for name in files:
+        path = root / "recon" / target / "exposure" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("prior evidence\n")
+    run(stage, expected=75)
+    for name in files:
+        assert (root / "recon" / target / "exposure" / name).read_text() == "prior evidence\n"
+
+
+def test_real_httpx_loopback_preserves_path_port_and_redirect(probe_checkout):
+    candidates = [Path("/root/go/bin/httpx"), Path("/usr/local/bin/httpx")]
+    binary = next((path for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
+    if binary is None:
+        pytest.skip("ProjectDiscovery httpx binary unavailable")
+    root, _, run = probe_checkout
+    stub = root.parent / "home/go/bin/httpx"
+    stub.unlink()
+    stub.symlink_to(binary)
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "/must-not-follow")
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<title>Local Redirect</title>")
+
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    target = f"http://127.0.0.1:{server.server_port}/login?next=%2Fhome"
+    TargetStore(root, target).initialize()
+    try:
+        run(target_value=target)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    live = root / "recon" / target_storage_key(target) / "live"
+    assert set(requests) == {"/login?next=%2Fhome"}
+    assert live.joinpath("urls.txt").read_text().splitlines() == [target]
+    assert "[302]" in live.joinpath("httpx_full.txt").read_text()
+    assert set(json.loads(live.joinpath("probe_state.json").read_text())["completed"]) == {target}
 
 
 @pytest.mark.parametrize("change", ["config", "origins", "scope", "legacy"])

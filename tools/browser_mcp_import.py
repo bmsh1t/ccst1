@@ -163,9 +163,11 @@ def _console_items(payload: Any) -> list[dict[str, Any]]:
     parsed = []
     for line in raw.splitlines():
         text = line.strip()
-        if not text or text.lower().startswith(("total messages:", "returning ", "note:")):
+        if (not text or text == "<no console messages found>"
+                or text.lower().startswith(("total messages:", "returning ", "note:", "## console messages"))
+                or re.fullmatch(r"Showing \d+-\d+ of \d+ \(Page \d+ of \d+\)\.", text)):
             continue
-        match = re.match(r"^(?:\[\s*\d+(?:\.\d+)?ms\]\s*)?\[?(error|warning|warn|info|debug|verbose|log)\]?[:\s-]+", text, re.I)
+        match = re.match(r"^(?:msgid=\d+\s+)?(?:\[\s*\d+(?:\.\d+)?ms\]\s*)?\[?(error|warning|warn|info|debug|verbose|log)\]?[:\s-]+", text, re.I)
         level = match.group(1).lower() if match else "log"
         if level == "warn":
             level = "warning"

@@ -40,7 +40,7 @@ Importer 通过共同入口选择条目，使用 `from_capture=True` 生成一�
 
 - 浏览器选择时机由 `rules/playwright-browser-mcp.md#1-何时使用` 统一定义，常驻
   runtime-protocol 与手动/自动执行入口引用它。可交互业务面未知、新身份/状态或动态流程
-  缺证据时主动观察；保留新空 Autopilot 的 Recon 启动顺序，纯 API/源码问题和有效既有证据
+  缺证据时主动观察；Autopilot 开场归共享 automation 协议，纯 API/源码问题和有效既有证据
   不强制浏览器。不新增关键词路由器、工具次数配额或第二套 readiness owner。
 - 原生 MCP 连续流程按 `docs/evidence-runners.md#在执行时捕获原件` 的有界批次捕获/登记；
   材料按需保存，不要求每个点击/快照后中断写回；HAR 专用收尾的条件以该合同为准。
@@ -68,7 +68,9 @@ Importer 通过共同入口选择条目，使用 `from_capture=True` 生成一�
   body/console/snapshot 摘要仍保留结构、计数、hash 和原件引用；已有 body shape 再投影不变。
   Console 的顶层数组与对象内数组均进入同一条目摘要，原文仍私有。原生文本按完整等级
   识别：`WARN` → `warning`，`WARNING` 保持 `warning`，`VERBOSE` 保留 `verbose`；
-  Playwright 的可选 `[ 123ms]` 前缀不改变等级；正文内等级词不用于猜类型。
+  Playwright 的可选 `[ 123ms]` 和 Chrome 的 `msgid=N` 前缀不改变等级；标题/分页行不计消息。
+  Chrome `reqid=N METHOD URL [STATUS]` 与 Playwright 编号文本均保留 method、精确 URL 和状态，
+  仍仅用于发现，不补造正文/时间。正文内等级词不用于猜类型。
   不对等级做 `warn` 子串替换。正文只在
   `postData`/`requestPostData` 的带 `mimeType` 包装中读取 `text`；原生详情 `requestBody`
   直接保留正文，`requestHeaders` 的 Content-Type 供类型提示；`body/payload/data`
@@ -184,7 +186,7 @@ first-use probe -> MCP filename/filePath -> browser_mcp_import archives raw
 ### 2. Signatures
 
 ```text
-run_xnlinkfinder BIN TARGETS_FILE SCOPE_FILE OUTPUT_FILE TARGET
+run_xnlinkfinder BIN TARGETS_FILE SCOPE_FILE OUTPUT_FILE TARGET RESULTS_FILE
 run_legacy_linkfinder BIN RESPONSE_FILE OUTPUT_FILE
 ```
 
@@ -192,12 +194,15 @@ run_legacy_linkfinder BIN RESPONSE_FILE OUTPUT_FILE
 
 - `quick/normal` 只保留完整 JS inventory 和有界候选；`deep/full` 匿名上下文优先 xnLinkFinder，
   缺工具、非零退出或认证上下文使用逐 URL LinkFinder。
-- xnLinkFinder v8.2 在非 TTY 中从 stdin 读取原生 URL 列表；不得改回 `-i FILE`。
+- xnLinkFinder 从 stdin 读取原生 URL 列表；stdout 用标准库 PTY 保留实际响应/分析诊断，
+  endpoint 使用独立 `-o FILE -ow`，不从退出0或另一工具的响应推断成功。adapter 保留上游原件，
+  仅实际2xx、到达正常输出且无分析错误的已选 URL 产生成功回执；缺日志、失败、提前停止保留 partial。
   保留工具自身的重定向、单响应 `-mrs 20` 限制和 timebox，不新增下载器或 HAR 转换。
-- 先确定链接分析器，再逐个 curl 前 50 个 target-owned URL 做内置 endpoint/secret 提取；
-  选中 LinkFinder 时，前 25 个 URL 直接共用当前正文，不再下载一次。只用一个私有临时文件，
-  每 URL 清空后写入，正常结束与退出均清理。内置请求保持 10 秒，供 LinkFinder 共用的请求
-  使用原 LinkFinder 的 15 秒上限。下载失败跳过整个正文且不重试，LinkFinder 失败也标 `partial`。
+- 完整目标内库存进入 selector，显式输入只选择子集。内置提取每批50、链接分析每批25，
+  用现有 schema 的两个实例分别记成功；每 URL 两项交集为整体成功。发布先于进度，完整入口也不清空对应旧产物。
+  LinkFinder 共用当前或按 URL/认证身份保存的成功正文，不重复下载；内置请求保持10秒，
+  供 LinkFinder 共用的请求保持15秒。curl非零/非2xx、提取错误保留partial；零命中是正常结果。
+  原始响应/headers和回执保存在私有run，成功正文用于后续分析；退出清理未发布临时文件。
   原生 xnLinkFinder 与内置 secret 提取仍可能分别请求同一 URL；后续显式 secrets-hunter 仍是独立刷新。
 - xnLinkFinder 必须使用 `-sf SCOPE_FILE`、现有 `RATE_LIMIT`、depth=1 和工具级 timebox；v8.2 的
   depth=1 只请求显式输入，depth>1 才递归请求发现链接。`-sf` 是不安全的域名子串匹配，不能独立
@@ -215,7 +220,7 @@ run_legacy_linkfinder BIN RESPONSE_FILE OUTPUT_FILE
 
 | 条件 | 结果 |
 |---|---|
-| deep/full、匿名、xnLinkFinder 可用 | stdin 输入原生 URL 列表，保留工具原有限制、严格过滤输出；不运行 LinkFinder |
+| deep/full、匿名、xnLinkFinder 可用 | stdin URL、PTY诊断、独立输出；仅未确认输入可回退 LinkFinder |
 | curl 或 LinkFinder 失败 | 记录失败、phase 保持 `partial`；不分析不完整正文、不隐式重取 |
 | xnLinkFinder 非零退出 | 保留部分输出、记录 warning，追加逐 URL LinkFinder 结果，phase 保持 `partial` |
 | scope 构建失败 | 清空 scope，记录 warning，回退逐 URL LinkFinder，phase 保持 `partial` |
@@ -234,6 +239,7 @@ run_legacy_linkfinder BIN RESPONSE_FILE OUTPUT_FILE
 - Shell 语法和静态 wiring 固定 profile、scope、rate、depth、fallback 与输出路径。
 - fake xnLinkFinder 必须断言目标文件字节进入 stdin、参数包含 `-sf/-all/-d/-rl/-mrs` 且没有 `-i`；
   同时覆盖恶意后缀域输出过滤、非零退出时保留已过滤的部分输出和显式端口回退。
+- 真实本地 2xx/503/空结果验证诊断回执；跨50/25边界、新增、失败前缀、子集和成功复用由现有 Recon 回归覆盖。
 - 临时直接调用至少验证一个 API 路径和一个认证路径能被已安装 LinkFinder 提取，
   与内置解析共用一次 curl，失败保留 `partial`，正常与中断退出清理临时正文。
 

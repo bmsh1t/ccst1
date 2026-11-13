@@ -783,42 +783,6 @@ def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
     return tracked > 0 and tripped > 0 and ready == 0
 
 
-def _needs_initial_recon(state: dict) -> bool:
-    """Default empty targets to collection without gating existing investigation."""
-    if state.get("target_kind") == "list":
-        return False
-    if state.get("has_recon") is not False or state.get("has_memory") is not False:
-        return False
-    resume = state.get("resume_summary")
-    # Revision zero is initialization only; even an unbound native attempt advances it.
-    if resume is not None and (resume.get("source_binding") or {}).get("revision") != 0:
-        return False
-    recon = state.get("recon_artifacts") or {}
-    browser = state.get("browser_evidence") or {}
-    inventory = state.get("observation_inventory") or {}
-    return not any((
-        state.get("runtime_state"),
-        state.get("repo_source_available"), state.get("root_finding_claims"),
-        state.get("recon_completed_no_live_hosts"),
-        (state.get("round_progress") or {}).get("claimed_count"),
-        browser.get("present"), browser.get("ready"),
-        browser.get("reason") not in (None, "", "missing browser capture"),
-        any(value is None or value for value in (recon.get("counts") or {}).values()),
-        recon.get("ffuf_needs_summary"),
-        (recon.get("phase_gates") or {}).get("available"),
-        (recon.get("http_probe") or {}).get("outcome") not in (None, "", "missing"),
-        (recon.get("run_budget") or {}).get("status") not in (None, "", "missing"),
-        (recon.get("cidr_continuation") or {}).get("status") not in (None, "", "none"),
-        inventory.get("total"),
-        inventory.get("status") not in (None, "", "missing", "valid"),
-        (state.get("surface_projection") or {}).get("status") not in (None, "", "missing", "valid"),
-        (state.get("scanner_summary") or {}).get("status") not in (None, "", "missing"),
-        (state.get("json_inject") or {}).get("present"),
-        any(lane.get("present") for lane in (state.get("sql_matrix") or {}).values()),
-        (state.get("intel_continuation") or {}).get("action") not in (None, "", "complete"),
-    ))
-
-
 def build_control_projection(state: dict) -> dict:
     """Derive compatibility hints from one owner frontier without ranking owners."""
     hard_gate = _hard_gate_projection(state)
@@ -830,14 +794,13 @@ def build_control_projection(state: dict) -> dict:
         else work[0]["next_action"] if len(work) == 1
         else "wait_recon" if not frontier and state.get("recon_in_progress")
         else "wait_scan" if not frontier and state.get("scan_in_progress")
-        else "run_recon" if not frontier and _needs_initial_recon(state)
         else "continue_investigation"
     )
     lane = (
         ("recon-and-surface" if state.get("target_kind") == "list" else "state-and-queue")
         if hard_gate else recovery["lane"] if recovery
         else work[0]["lane"] if len(work) == 1
-        else "recon-and-surface" if action == "run_recon" else "controller"
+        else "controller"
     )
     projection = {
         "hard_gate": hard_gate,
@@ -954,10 +917,8 @@ def _describe_next_step(state: dict) -> str:
                 "preserve prior CIDR pages."
             )
         return (
-            f"Start with /recon {target}, preserving flags, seed URL and auth/context. "
-            "Apply the complete src-hunter body under skills/runtime-protocol.md#native-skill-loading first. "
-            "Usable request/source/browser evidence already supplied for this target "
-            "may replace this initial default. After Recon, refresh state and continue "
+            f"If selected, run /recon {target}, preserving flags, seed URL and auth/context. "
+            "Use commands/recon.md for collection inputs and batches. Refresh state and continue "
             "investigation under skills/autopilot-protocol.md#shared-automation."
         )
     if action == "wait_recon":

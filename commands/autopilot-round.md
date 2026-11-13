@@ -41,8 +41,8 @@ Apply the complete delivered `skills/autopilot-protocol.md` with this Bootstrap.
 Every numbered body must be complete and match `host.source_sha256`;
 missing/truncated output or `CCST_AUTOPILOT_INCOMPLETE` forbids investigation.
 Never invoke `/autopilot`.
-Bootstrap initializes the single-target Store before prepare; the shared new-target
-Recon default applies after the round starts and its selected lane is claimed.
+Bootstrap initializes the single-target Store before prepare; the shared opening
+conditions apply after the round starts and its selected lane is claimed.
 
 ## Prepare And Terminal Precheck
 

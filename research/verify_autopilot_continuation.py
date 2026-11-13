@@ -164,6 +164,9 @@ def check(root, runtime):
          patch.object(state_api, "load_closure_projection", return_value=closure):
         wait = event("Stop", background_tasks=[task])
         assert wait["decision"] == "block" and "Collect" in wait["reason"]
+        for _ in range(2):
+            assert event("Stop", background_tasks=[task], stop_hook_active=True)["decision"] == "block"
+            assert binding()["status"] == "active" and not binding()["last_stop_basis"]
         notification = ("<task-notification><task-id>fixture-task</task-id>"
                         "<output-file>/tmp/fixture-result</output-file><status>completed</status>"
                         "<summary>synthetic completion</summary></task-notification>")

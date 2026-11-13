@@ -16,10 +16,10 @@ HIGH_SIGNAL_PARAM_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]{0,80}$")
 RAW_REQUEST_RE = re.compile(
     r"""
     ^\s*
-    (?:\d+\.\s*)?
-    (?:\[(?P<method>GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\]\s*)?
+    (?:(?:\d+\.|reqid=\d+)\s*)?
+    (?:\[?(?P<method>GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\]?\s+)?
     (?P<url>https?://[^\s]+|/[^\s]+)
-    (?:\s*=>\s*(?:\[(?P<status>\d{3})\])?.*)?
+    (?:\s*(?:=>\s*|(?=\[\d{3}\]))(?:\[(?P<status>\d{3})\])?.*)?
     \s*$
     """,
     re.I | re.X,
@@ -177,7 +177,7 @@ def _raw_request_items(raw: str) -> list[dict]:
 
 
 def _parse_raw_request_line(line: str) -> dict:
-    """Parse lines like: 2. [POST] https://host/api/me => [200] OK."""
+    """Parse Playwright numbered lines and Chrome reqid/method/status lines."""
     match = RAW_REQUEST_RE.match((line or "").strip())
     if not match:
         return {}

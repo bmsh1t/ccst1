@@ -104,8 +104,13 @@ mechanical safety, evidence and recovery constraints govern execution.
   Result collection/write-back precedes final Closure/review; after needed Refresh,
   use its returned identity, record an evidence-backed review and reread Closure.
   Stop never chooses a reason, writes a review or relaxes normal-stop admission.
-- Repeated identical Stop rejection suspends as incomplete, without a default
-  investigation cap. The existing last_stop_basis includes review status,
+- Repeated identical non-waiting Stop rejection suspends as incomplete, without a default
+  investigation cap. Current recon/scan execution or host running/pending tasks keep
+  Stop waiting and clear last_stop_basis; unfinished Round/lanes alone are not running
+  proof. needs_refresh and invalid/failed batch handling retain priority. A Stop
+  owner read/decision error saves suspended + needs_refresh under the validated
+  binding lock before returning INCOMPLETE; an unwritable binding still fails visibly.
+  The existing last_stop_basis includes review status,
   review_status, sorted unique missing_tokens, residual presence and snapshot_stale,
   alongside owner components/tasks/termination. Review-only repair is progress even
   though Closure excludes its own review from the owner snapshot; decision/residual
@@ -121,7 +126,7 @@ mechanical safety, evidence and recovery constraints govern execution.
   SessionStart may restore completed source bodies but cannot grant a reopen prompt;
   compact preserves an already current prompt grant, while restart, Stop, StopFailure
   and SessionEnd expire it; clear returns the binding to idle. Source failures retain completed status. Notifications
-  cannot grant continuation. Only successful completed reopen or source refresh clears last_stop_basis;
+  cannot grant continuation. Completed reopen, source refresh and execution waiting clear last_stop_basis;
   ordinary Refresh preserves repeated-rejection protection.
   Native interruption needs no review, ordinary
   later conversation is not forced into a hunt, and a bound session changing cwd
@@ -145,10 +150,10 @@ mechanical safety, evidence and recovery constraints govern execution.
   a bare primary domain), IP/CIDR, host:port, URL and target list are fixed-target
   inputs. In-scope subdomain discovery does not imply group/brand discovery.
   Missing history/material or Skill loading must not create a campaign seed queue.
-  Shared Automation starts new/empty targets without prior work or usable supplied
-  evidence with Recon; existing work and usable supplied evidence retain their
-  recovery/direct-investigation paths. The Skill/module guidance preserves this
-  command contract without another controller or a universal inventory gate.
+  Shared Automation owns mode-specific opening conditions; deep public-domain discovery
+  prefers available FOFA, with complementary Recon methods in web2-recon. Ordinary
+  fresh targets retain their Recon default. Existing evidence/recovery paths remain
+  available; no mode propagation through generic state readers or new controller.
   The 6k/Autopilot integration boundary lives in `docs/ccst-runtime-adapter.md`;
   command-specific control changes do not rewrite shared 6k investigation rules.
 - Nested `/recon` retains the active Autopilot invocation. Live phase locks are
@@ -283,35 +288,19 @@ mechanical safety, evidence and recovery constraints govern execution.
   hints without replacing the business token. Active lock tokens remain
   `wait_recon`/`wait_scan`; compact and loop views consume this projection, not
   separate owner priorities. Empty work returns `continue_investigation`;
-  Closure maps that guidance to its existing handoff meaning. For a truly
-  empty single target, the same projection defaults to `run_recon` with lane
-  `recon-and-surface` and selection mode `fallback`, never a hard gate or Queue item.
-  Resume's existing Store binding (revision zero means initialization only),
-  saved memory, raw claims, runtime/Recon records, browser/source/scan material,
-  observation/Surface health and claimed Round work prevent treating prior work
-  as empty. Missing Recon alone never requires restarting it; partial/zero-result
-  collection and invalid cached material retain their diagnostics and recovery.
-  Conversation-supplied usable evidence can override this initial default at the
-  command layer. State passes its cached observation/Surface facts into this
-  projection before deriving all action/lane fields. Both modes use the same
-  stat-based Recon control facts; full diagnostics retain exact counts separately.
-  FFUF raw files without a summary remain prior material, through the existing
-  adapter's metadata-only missing-summary view; no extra Store scan or schema.
+  Closure maps that guidance to its existing handoff meaning. Empty initialized
+  targets use the same native continuation and controller lane; no file-existence
+  heuristic chooses collection. Both modes retain stat-based Recon control facts;
+  full diagnostics retain exact counts separately. Missing material, partial/zero
+  collection and invalid cursors retain their diagnostics. Explicit run_recon and
+  CIDR recovery rendering remain compatible.
   The same gate owns the existing Guard fallback: only empty-frontier fallback
   with Recon and all tracked hosts cooling changes `next_action`/`fallback_action`
   to `guard_safe_pivot`. `primary_next_action` stays the original owner hint;
   lock, recovery, owner priority, lane and Intel exemptions remain unchanged.
-  Regression history: `76d16e6` removed the initial Recon branch while removing
-  the blanket inventory gate; `bd619ea` made empty work fall back to `handoff`.
-  Regress the real initialized Store path, not just the untouched-target shortcut
-  or rendered instruction text. Native acceptance must verify expanded Bootstrap
-  and complete Skill body delivery, actual requests and return/finish behavior;
-  keep input open through background completion. Local 2026-10-26 acceptance
-  restored Skill→Recon startup, but still observed probes during Recon, omitted
-  method reads and early finish with budget/leads remaining. Two published lab
-  reports do not establish full automation acceptance or stable model obedience.
-  That run used the earlier global-rule edits, now withdrawn. Its model behavior
-  does not validate the narrowed, adapter-only integration wording.
+  Regression checks use the real initialized Store, owner/wait/CIDR/batch paths
+  and shared source delivery. Engineering checks do not establish model obedience
+  or public-target discovery gains; native acceptance remains separate.
 - Closure builds recovery descriptions only through `_closure_reason_frontier`.
   Finalization preserves fixed reason precedence/verdict, retains independent
   checkpoint recovery under a primary Round reason, and replaces duplicate

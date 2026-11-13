@@ -692,7 +692,7 @@ def test_derived_status_exposes_partial_recon_budget(tmp_path, monkeypatch):
     view = derive_state_view(tmp_path, "target.com")
 
     assert view["derived"]["status"] == "partial"
-    assert "recon run exceeded" in view["derived"]["reason"]
+    assert "recon execution is incomplete" in view["derived"]["reason"]
 
 
 def test_inspect_recon_artifacts_reports_ready_cache(tmp_path):
@@ -1245,6 +1245,28 @@ def test_local_collection_preserves_unrepaired_collector_failure(tmp_path):
             "id": "independent-review", "action": "review saved browser evidence"}})
         assert control["next_action"] == "resume_action_queue"
         assert manifest.read_bytes() == before
+
+
+@pytest.mark.parametrize("status,note", [
+    ("not_run", ""),
+    ("partial", ""),
+    ("ok", "input_total=3; selected=1; remaining=2; closure_blocking=false"),
+])
+def test_first_live_batch_does_not_claim_complete_recon(tmp_path, status, note):
+    from tools.recon_gate import append_recon_record
+
+    target = "target.com"
+    TargetStore(tmp_path, target).initialize()
+    live = tmp_path / "recon" / target / "live"
+    live.mkdir(parents=True)
+    (live / "httpx_full.txt").write_text("https://target.com [200]\n")
+    for phase, execution, detail in (("http_probing", "ok", ""), ("dir_fuzz", status, note),
+                                     ("run_budget", "ok", "")):
+        append_recon_record(tmp_path, target=target, mode="deep", phase=phase,
+                            status=execution, count=1, note=detail,
+                            artifact="recon/target.com/live/httpx_full.txt")
+    assert inspect_recon_artifacts(tmp_path, target)["ready"]
+    assert derive_state_view(tmp_path, target)["derived"]["status"] == "partial"
 
 
 def test_inspect_recon_artifacts_reports_legacy_ffuf_without_parsing_it(tmp_path):

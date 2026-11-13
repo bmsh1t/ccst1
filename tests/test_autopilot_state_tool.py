@@ -4422,6 +4422,16 @@ def test_default_formatted_state_omits_explicit_closure_line():
     assert "Loop guard:" not in output
 
 
+@pytest.mark.parametrize("bounded", [False, True])
+def test_empty_initialized_target_keeps_native_investigation(tmp_path, bounded):
+    TargetStore(tmp_path, "target.com").initialize()
+    state = build_autopilot_state(str(tmp_path), "target.com", bounded=bounded,
+                                  memory_dir=str(tmp_path / "hunt-memory"))
+    assert state["next_action"] == "continue_investigation"
+    assert state["next_lane"] == "controller"
+    assert state["hard_gate"] == {} and state["owner_continuations"] == []
+
+
 def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch, store):
     def fail(*_args, **_kwargs):
         raise AssertionError("closure owner read")
@@ -4433,7 +4443,7 @@ def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch, 
         str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"), bounded=True
     )
 
-    assert state["next_action"] == "run_recon"
+    assert state["next_action"] == "continue_investigation"
 
 
 def test_explicit_closure_requires_resolution_of_registered_advisory_work(tmp_path, store):

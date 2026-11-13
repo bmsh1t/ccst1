@@ -120,7 +120,9 @@ not infer thresholds from prose or fabricate cost receipts. The optional explici
 time threshold and applicable Round limit are bound at entry; an ending review
 cannot shorten them or borrow a prior completed Round. It checks unfinished
 execution and known owner work; Closure alone retains exhaustion meaning. A repeated
-unchanged rejection suspends as incomplete. New user prompts suspend enforcement;
+unchanged non-waiting rejection suspends as incomplete. Running execution waits
+without advancing this guard; a Stop read/decision error saves suspended recovery.
+New user prompts suspend enforcement;
 only an explicit same-task state refresh rearms it, and native interruption needs no review.
 Claude decides intent; ordinary questions/cancellation/task changes stay suspended.
 Decision views carry the current Store goal even on ordinary refresh. Review basis v3
@@ -149,8 +151,8 @@ State acquires owner facts; `autopilot_gate` builds their continuation projectio
 Legacy action tokens, compact views and lane hints derive from that projection;
 multiple owner items remain available for Claude to choose. Closure keeps its own
 evidence verdict and shares only the reason-to-continuation rendering. Empty owner
-work returns `continue_investigation`, with `run_recon` as the empty new-target default
-under Shared Automation, not a prerequisite for existing evidence. Round retains
+work returns `continue_investigation`. Shared Automation owns opening conditions;
+state does not infer a mandatory Recon from missing files. Round retains
 claims, optional explicit lane caps and recovery under the same Autopilot loop.
 Neither mode assigns a default whole-investigation time, cost or lane budget.
 Per-operation timeouts, rate limits and review allocations remain local execution bounds.
@@ -160,7 +162,12 @@ Its FFUF phase runs synchronously while retaining bounded per-origin workers;
 root and www stay distinct. Existing ReconAdapter, target selector, candidates and
 gate modules own parsing, collection accounting, source navigation and manifest
 publication respectively. Raw publication and a valid summary precede collection
-progress. Read-side health checks do not publish or repair producer state.
+progress. Individual stages share the existing entry, phase ledger and selector;
+external candidates require actual HTTP responses before entering live. First-batch
+readiness never establishes whole-Recon completion. Read-side health checks do not
+publish or repair producer state.
+JS extraction and link analysis use separate instances of that selector, publish
+results before progress, and reuse saved responses; no second progress owner is added.
 
 The dedicated request-diff execution lane, request-pair parser, response-diff
 module and `probe.py` request/ledger wrapper are retired. Native execution uses
@@ -236,8 +243,8 @@ Historical knowledge `related_skills` and reviewed bytes keep their review ident
 registry/audit and installer identity checks; unknown/missing references fail. It
 neither registers old Skills nor changes ranking, target basis or Store schemas.
 
-New/empty automatic targets without prior work or usable supplied evidence start
-with Recon under the shared entry contract; supplied evidence can start directly.
+Automatic opening follows the shared protocol and Recon decision module. Existing
+evidence can start investigation directly; deep discovery publishes incremental material.
 Missing Recon on existing targets, zero live hosts and collection residuals do not choose an investigation
 route or hide Queue/Finding/Runner work. Valid collection continuations are optional;
 invalid cursors remain non-runnable. Real locks, Scope/Auth/parent scope, claims,

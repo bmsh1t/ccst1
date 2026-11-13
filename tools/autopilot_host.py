@@ -212,6 +212,7 @@ def stop_check(binding: dict, state: dict, closure: dict, event: dict) -> dict:
                if item.get("runnable", True) and item.get("closure_blocking", True)]
     host_tasks = [item for item in event.get("background_tasks", [])
                   if item.get("status") in {"running", "pending"}]
+    waiting = not binding.get("needs_refresh") and bool(active_phase or host_tasks)
     if binding.get("needs_refresh"):
         reason = "Context recovered. Run the current host state command before target work or completion."
     elif unfinished or host_tasks:
@@ -253,7 +254,7 @@ def stop_check(binding: dict, state: dict, closure: dict, event: dict) -> dict:
         reason = "The stop review must preserve current unfinished owner work and reopening conditions in residual_unknowns."
     else:
         return {"allow": True, "reason": termination["reason"], "exhausted": bool(closure.get("can_claim_exhausted"))}
-    return {"allow": False, "reason": reason, "basis": json_digest({
+    return {"allow": False, "reason": reason, "waiting": waiting, "basis": json_digest({
         "components": closure.get("snapshot_components"), "reason": reason,
         "tasks": host_tasks, "termination": termination,
         "review": {"status": review.get("status"), "review_status": review.get("review_status"),
@@ -382,26 +383,33 @@ def hook(runtime: Path, data: dict, *, part: int | None, contract_sha256: str) -
         if event != "Stop" or binding.get("status") != "active":
             return {}
         from tools.autopilot_state import build_autopilot_state, load_closure_projection
-        state = build_autopilot_state(str(REPO_ROOT), binding["target"], bounded=True, include_goal_memory=False)
-        # A batch selects a real target; its list file has no Finding/Checkpoint Store.
-        closure = {} if state.get("target_kind") == "list" else load_closure_projection(str(REPO_ROOT), state)
-        decision = stop_check(binding, state, closure, data)
-        if decision["allow"]:
-            binding["status"] = "completed"
+        try:
+            state = build_autopilot_state(str(REPO_ROOT), binding["target"], bounded=True, include_goal_memory=False)
+            # A batch selects a real target; its list file has no Finding/Checkpoint Store.
+            closure = {} if state.get("target_kind") == "list" else load_closure_projection(str(REPO_ROOT), state)
+            decision = stop_check(binding, state, closure, data)
+            if decision["allow"]:
+                binding["status"] = "completed"
+                write_json_atomic(path, binding)
+                return {}
+            batch_blocked = state.get("target_kind") == "list" and state.get("next_action") in {"invalid_batch_target", "batch_failed"}
+            if batch_blocked or (not decision["waiting"] and data.get("stop_hook_active")
+                                 and binding.get("last_stop_basis") == decision["basis"]):
+                binding["status"] = "suspended"
+                write_json_atomic(path, binding)
+                return {"continue": False, "stopReason": "CCST_AUTOPILOT_INCOMPLETE: "
+                        + ("" if batch_blocked else "Repeated Stop with unchanged owner/review requirements. ")
+                        + decision["reason"]
+                        + " Automation is suspended; retained evidence is not completion. " + _state_command(runtime, binding)}
+            # Waiting is not failed repair; the first post-execution rejection starts a fresh comparison.
+            binding["last_stop_basis"] = "" if decision["waiting"] else decision["basis"]
             write_json_atomic(path, binding)
-            return {}
-        batch_blocked = state.get("target_kind") == "list" and state.get("next_action") in {"invalid_batch_target", "batch_failed"}
-        if batch_blocked or (data.get("stop_hook_active") and binding.get("last_stop_basis") == decision["basis"]):
-            binding["status"] = "suspended"
+            return {"decision": "block", "reason": decision["reason"] + "\nHost binding: "
+                    + json.dumps(_host_view(runtime, binding), ensure_ascii=False)}
+        except (OSError, ValueError, KeyError, TypeError):
+            binding.update(status="suspended", needs_refresh=True)
             write_json_atomic(path, binding)
-            return {"continue": False, "stopReason": "CCST_AUTOPILOT_INCOMPLETE: "
-                    + ("" if batch_blocked else "Repeated Stop with unchanged owner/review requirements. ")
-                    + decision["reason"]
-                    + " Automation is suspended; retained evidence is not completion. " + _state_command(runtime, binding)}
-        binding["last_stop_basis"] = decision["basis"]
-        write_json_atomic(path, binding)
-        return {"decision": "block", "reason": decision["reason"] + "\nHost binding: "
-                + json.dumps(_host_view(runtime, binding), ensure_ascii=False)}
+            raise
 
 
 def main(argv: list[str] | None = None) -> int:

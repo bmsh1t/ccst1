@@ -197,7 +197,7 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   dropping context or calling a shell/browser instead is not an equivalent constrained path.
   The Hunt commands below apply without a parent continuation; they do not override this gate.
 
-- New empty automatic targets follow the startup Recon default in
+- New empty automatic targets follow the opening conditions in
   `skills/autopilot-protocol.md#state-consumption-loop`. For an existing target's selected
   `run_recon`, read full state with
   `python3 tools/autopilot_state.py --target <target_shell> --json` and its current
@@ -209,8 +209,8 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
   Append `arguments.recon_flags` exactly. Invalid cursors are not executable;
   never restart at zero or discard prior pages. FFUF pending/partial retains its
   remaining work and exact owner continuation, but does not require a full Recon
-  rerun. The current CLI offers complete profiles, not `--phase` or
-  `--ffuf-rotation-only`; choose that cost explicitly or investigate other evidence.
+  rerun. Use `commands/recon.md#deep-collection-batches` for individual discovery/collection
+  stages; complete profiles remain explicit choices.
   `live/urls.txt` remains the complete source. Zero live hosts alone neither ends
   investigation nor authorizes another pipeline run.
 - Before a breadth helper, inspect `tools/surface.py`, `tools/context_pack.py`, and `tools/observation_inventory.py summary` when a usable cache exists. A later breadth pass is `python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick`.
@@ -287,7 +287,7 @@ Checkpoint, Pickup and preflight never initialize, import, or recreate old owner
 - Follow only majority/control relationships, dedupe `entity_ref` (or source/entity), and stop after two empty domain levels or budget exhaustion. Use structured public sources; Chrome DevTools MCP is public/no-credential only and writes locatable `source_ref` facts. Normalize to `recon/<target-key>/exposure/asset_relation_observations.jsonl`, run `python3 tools/recon_candidates.py --target <target_shell>`, and refresh `/surface`/`/checkpoint`.
 - Relation candidates are AI-routed from the bounded `value`, `asset_type`, `relation`, `related`, `signals`, `sources`, `source_refs`, `confidence`, and `scope_status` fields. Return one `related`, `uncertain`, or `unrelated` decision with a short evidence-based `reason` and bounded `source_refs`; related only raises priority, uncertain stays passive, and unrelated is omitted from active Context/Surface/Queue/Coverage/Closure. This decision never changes Scope; only existing `in_scope` is executable. Keep raw observations for audit and rebuild.
 - A third-party-hosted host or service with multiple page, behavioral, or brand evidence points tying it to the target organization is a first-class ownership signal: record it as `confidence: high` with multiple `sources` so it routes to `scope-review` and gets a forced decision, rather than leaving it as passive context. Ownership evidence never expands authorization; only an explicit target set makes the asset testable.
-- Resolve `asset-scope-review`; only tool-derived `in_scope` is executable, while `scope-review`, `external-chain-context`, `excluded`, and `unknown` retain lossless raw evidence. FofaMap (`mcp__fofamap__*`) is one optional FOFA/Shodan adapter for a concrete coverage gap; do not call it every round or install it when missing. Future Quake/Hunter adapters use the same contract. Never send active validation requests to a returned third-party asset solely because a relationship source reported it.
+- Resolve `asset-scope-review`; only tool-derived `in_scope` is executable, while `scope-review`, `external-chain-context`, `excluded`, and `unknown` retain lossless raw evidence. FofaMap (`mcp__fofamap__*`) is an optional FOFA/Shodan adapter used under the shared opening conditions or for a concrete coverage gap; follow the Recon module and do not install it when missing. Future Quake/Hunter adapters use the same contract. Never send active validation requests to a returned third-party asset solely because a relationship source reported it.
 
 ## Wire And Live-Action Boundaries
 

@@ -135,7 +135,7 @@ def classify_route_kind(probe: dict, shell: dict) -> str:
     return "unknown"
 
 
-def _load_endpoint_urls(repo_root: Path, target: str, limit: int) -> list[str]:
+def _load_endpoint_urls(repo_root: Path, target: str, limit: int | None) -> list[str]:
     """Candidate endpoints from the Active URL view and surface index; no ranking."""
     storage_key = target_storage_key(target)
     urls: list[str] = []
@@ -202,9 +202,11 @@ def record_observation(
     """Merge one observation; a higher-ranked source never gets overwritten."""
     endpoints = observations.setdefault("endpoints", {})
     existing = endpoints.get(endpoint)
-    if not isinstance(existing, dict) or _observation_rank(source) > _observation_rank(
+    if (not isinstance(existing, dict)
+        or (not existing.get("facts", {}).get("status") and probe.get("status"))
+        or _observation_rank(source) > _observation_rank(
         str(existing.get("source") or "")
-    ):
+    )):
         endpoints[endpoint] = {
             "route_kind": route_kind,
             "source": source,
@@ -286,7 +288,7 @@ def probe_endpoints(
     count = 0
     for url in urls:
         endpoint = url.split("?")[0]
-        if endpoint in endpoints:
+        if endpoints.get(endpoint, {}).get("facts", {}).get("status"):
             continue
         if not shell or shell_endpoint != url.rsplit("/", 1)[0]:
             scheme_host = url.rsplit("/", 1)[0] if url.count("/") <= 2 else "/".join(url.split("/")[:3])
@@ -344,8 +346,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "probe":
         observations = load_observations(repo_root, args.target)
         ingested = ingest_ffuf_results(repo_root, args.target, observations)
-        urls = _load_endpoint_urls(repo_root, args.target, args.limit)
-        probed = probe_endpoints(repo_root, args.target, urls, args.timeout, observations)
+        urls = _load_endpoint_urls(repo_root, args.target, None)
+        endpoints = observations["endpoints"]
+        pending = [url for url in urls if not endpoints.get(url.split("?")[0], {}).get("facts", {}).get("status")]
+        pending.sort(key=lambda url: endpoints.get(url.split("?")[0], {}).get("observed_at", ""))
+        probed = probe_endpoints(repo_root, args.target, pending[:args.limit], args.timeout, observations)
+        remaining = sum(not endpoints.get(url.split("?")[0], {}).get("facts", {}).get("status") for url in pending)
         save_observations(repo_root, args.target, observations)
         if args.json:
             print(
@@ -354,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
                         "target": args.target,
                         "ffuf_observations": ingested,
                         "new_probes": probed,
+                        "status": "partial" if remaining else "complete",
+                        "remaining_count": remaining,
                         "total_endpoints": len(observations.get("endpoints", {})),
                     }
                 )

@@ -4,8 +4,8 @@ If Bootstrap returns `action=read_bootstrap`, read its exact `bootstrap_path` fu
 use that JSON as Bootstrap. Missing/truncated output forbids work; never select an older file.
 
 Apply `skills/runtime-protocol.md#输出契约` throughout this loop.
-Fresh targets start Recon. While it runs, investigate independent in-scope questions
-using available evidence; wait only for missing inputs the next experiment needs.
+Choose initial discovery under step 2. While collection runs, investigate independent
+questions using published evidence; wait only for inputs the next experiment needs.
 Apply the selected method, capture/register, refresh and choose the next question.
 Collect Recon's final result and review new Surface material when it arrives.
 Publishing a report returns to investigation; a saved next action is not completion.
@@ -73,20 +73,22 @@ instructions. Source refresh renews the review identity while retaining the orig
    never invent or repeatedly call an unavailable tool.
    Before selecting or executing new work (including fresh Recon), apply the complete
    delivered `src-hunter` body under [Investigation Skill](#investigation-skill).
-   `state.next_action=run_recon` is the initial default for a new/empty target.
-   Without prior work or usable supplied request/source/browser evidence, start
-   target I/O with `/recon`, preserving `arguments.recon_flags`,
-   seed URL and auth/context. Do not precede it with ad-hoc probes to create material.
-   Supplied usable evidence may start the investigation directly.
+   For a new public-domain target with `arguments.deep=true`, start with available
+   FOFA mapping and apply `skills/src-hunter/modules/web2-recon.md#incremental-discovery`.
+   Keep usable supplied evidence and prior work first. FOFA absence/failure and
+   local/private targets use direct discovery without waiting for that provider.
+   Ordinary non-deep fresh targets default to `/recon`. Preserve
+   `arguments.recon_flags`, seed URL and auth/context; explicit quick still limits collection cost.
    After Recon's Surface finalizer, apply [Surface Review](#surface-review) to its new
    material and adjust the next question; keep prior parallel work and its evidence.
    Before relying on history or repeating an experiment, apply
    `skills/runtime-protocol.md#problem-recall`; use returned corrections and conditions.
    `owner_continuations` order is advisory; keep deferred work and obey `runnable=false`.
    Existing-target gaps mandate neither Recon nor Checkpoint. Do not loop `/hunt`.
-   For an evidence-selected deep Katana/FFUF continuation, use the local batch
+   For a selected deep discovery or collection stage, use the local batch
    commands in `commands/recon.md#deep-collection-batches`; preserve auth/context,
-   inspect the returned material and choose again. Remaining words/seeds do not
+   inspect the returned material and choose again. Unexplored assets justify
+   broad discovery without a pre-existing vulnerability lead. Remaining words/seeds do not
    mandate another batch or a full Recon rerun.
 
 3. **Execute and save.** Before the selected question's first experiment, read
@@ -222,8 +224,10 @@ binding, then releases this invocation. On rejection, follow its specific diagno
 refresh stale owners/reviews, complete missing review fields, or rebind termination
 to the current host identity. Repair these in-session without asking for “continue”;
 a review gap alone does not establish worthwhile new investigation. Never fabricate
-evidence or a stop reason. Repeated Stop with unchanged owner/review requirements
-suspends as incomplete with the actual blocker; it never establishes exhaustion or a default budget.
+evidence or a stop reason. Running execution keeps Stop waiting for its result;
+it does not count as failed repair. Repeated non-waiting Stop with unchanged
+owner/review requirements suspends as incomplete with the actual blocker;
+it never establishes exhaustion or a default budget.
 
 Final output: target/mode, evidence, findings/candidates, blockers, next action;
 exactly one final-only, presentation-only `Memory recommendations` section

@@ -512,9 +512,12 @@ def _derive_current_status(
     if str(persisted.get("mode") or "").strip().lower() == "scan_failed":
         return {"status": "partial", "reason": "last scanner phase failed; preserved results require review", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     if (recon.get("run_budget") or {}).get("partial"):
-        return {"status": "partial", "reason": "recon run exceeded its budget and remains resumable", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+        return {"status": "partial", "reason": "last recon execution is incomplete; preserved results require review", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     if any(name.startswith("collector:") for name in (recon.get("phase_gates") or {}).get("incomplete", [])):
         return {"status": "partial", "reason": "recon collector failures still require review", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    if any(gate.get("status") != "complete" or (gate.get("bounded") or {}).get("remaining", 0) > 0
+           for gate in (recon.get("phase_gates") or {}).get("latest", {}).values()):
+        return {"status": "partial", "reason": "recon material may be usable; collection gaps remain", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     if recon.get("ready"):
         return {"status": "complete", "reason": "recon is ready and finding/queue owners have no pending work", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     return {"status": "unavailable", "reason": "no current recon closure is available", "queue": queue, "failure_breadcrumb": failure_breadcrumb}

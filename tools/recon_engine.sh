@@ -2,7 +2,7 @@
 # =============================================================================
 # Enhanced Recon Engine
 # Full reconnaissance pipeline for target-driven penetration testing
-# Usage: ./recon_engine.sh <target> [--quick|--normal|--deep|--full] [--collect katana|ffuf]
+# Usage: ./recon_engine.sh <target> [--quick|--normal|--deep|--full] [--collect STAGE [--input FILE]]
 # =============================================================================
 
 set -euo pipefail
@@ -83,6 +83,10 @@ record_recon_collector() {
         --artifact "$artifact" --count "$count" --note "$note" --duration "$duration"
 }
 
+collects() {
+    [ -z "$RECON_COLLECT" ] || [ "$RECON_COLLECT" = "$1" ]
+}
+
 build_filtered_first_backstop() {
     local filtered="$1"
     local raw="$2"
@@ -112,7 +116,13 @@ publish_url_view() {
     else
         cp "$source" "$temporary"
     fi
-    mv -f "$temporary" "$output"
+    # Explicit JS inputs may not appear in the URL collectors' rebuilt view.
+    if [ -n "${RECON_COLLECT:-}" ] || [ "$output" = "$RECON_DIR/urls/js_files.txt" ]; then
+        publish_artifact_union "$temporary" "$output"
+        rm -f "$temporary"
+    else
+        mv -f "$temporary" "$output"
+    fi
 }
 
 build_target_owned_input() {
@@ -269,25 +279,12 @@ recon_record_budget_on_exit() {
 publish_raw_url_archive() {
     local staging="${RAW_URLS_STAGING:-}"
     local archive="${RAW_URLS_ARCHIVE:-}"
-    local merged
     [ -n "$staging" ] && [ -s "$staging" ] || return 0
     [ -n "$archive" ] || return 0
-    mkdir -p "$(dirname "$archive")" 2>/dev/null || return 1
-    merged="$(mktemp "${archive}.XXXXXX")" || return 1
     # Raw URL evidence is append-only across runs. Keep current staging
     # separate from Active views so historical URLs remain queryable without
     # widening the default scanner input.
-    if ! { append_artifact "$archive" && cat "$staging"; } \
-        | awk 'NF && !seen[$0]++' > "$merged"; then
-        rm -f "$merged"
-        return 1
-    fi
-    if ! mv -f "$merged" "$archive"; then
-        rm -f "$merged"
-        return 1
-    fi
-    # The merged plain file is authoritative for older readers.
-    rm -f "${archive}.gz" 2>/dev/null || true
+    publish_artifact_union "$staging" "$archive" || return 1
     rm -f "$staging" 2>/dev/null || true
 }
 
@@ -368,6 +365,18 @@ append_artifact() {
     elif [ -s "${artifact}.gz" ]; then
         gzip -cd "${artifact}.gz"
     fi
+}
+
+publish_artifact_union() {
+    local current="$1" artifact="$2" merged
+    mkdir -p "$(dirname "$artifact")" || return 1
+    merged="$(mktemp "${artifact}.XXXXXX")" || return 1
+    if ! { append_artifact "$artifact" && cat "$current"; } \
+        | awk 'NF && !seen[$0]++' > "$merged" || ! mv -f "$merged" "$artifact"; then
+        rm -f "$merged"
+        return 1
+    fi
+    rm -f "${artifact}.gz"
 }
 
 build_port_url_candidates() {
@@ -489,7 +498,7 @@ run_collector_task() {
     fi
     if [ "$status" = "ok" ] || [ "$status" = "partial" ]; then
         publish_artifact="$temp_artifact"
-        if [ "$status" = "partial" ] || [ "$artifact" = "$RECON_DIR/urls/katana.txt" ]; then
+        if [ "$status" = "partial" ] || [ -n "${RECON_COLLECT:-}" ] || [ "$artifact" = "$RECON_DIR/urls/katana.txt" ]; then
             publish_artifact="${temp_artifact}.merged"
             if ! { append_artifact "$artifact" && cat "$temp_artifact"; } \
                 | awk 'NF && !seen[$0]++' > "$publish_artifact"; then
@@ -528,8 +537,20 @@ start_collector() {
 }
 
 wait_collector_group() {
-    local index pid name artifact artifact_label meta_file status duration note count
-    for index in "${!COLLECTOR_PIDS[@]}"; do
+    local index pid name artifact artifact_label meta_file status duration note count ready before
+    while [ "${#COLLECTOR_PIDS[@]}" -gt 0 ]; do
+        ready=""
+        for index in "${!COLLECTOR_PIDS[@]}"; do
+            if [ -s "${COLLECTOR_META_FILES[$index]}" ] || ! kill -0 "${COLLECTOR_PIDS[$index]}" 2>/dev/null; then
+                ready="$index"
+                break
+            fi
+        done
+        if [ -z "$ready" ]; then
+            wait -n "${COLLECTOR_PIDS[@]}" || true
+            continue
+        fi
+        index="$ready"
         pid="${COLLECTOR_PIDS[$index]}"
         name="${COLLECTOR_NAMES[$index]}"
         artifact="${COLLECTOR_ARTIFACTS[$index]}"
@@ -544,6 +565,14 @@ wait_collector_group() {
         fi
         count=$(artifact_line_count "$artifact" || echo 0)
         record_recon_collector "$name" "$status" "$artifact_label" "$count" "$duration" "$note"
+        unset 'COLLECTOR_PIDS[index]'
+        if [ "${RECON_COLLECT:-}" = "discover" ] && [ "$TARGET_KIND" = "domain" ]; then
+            before="$(cksum "$RECON_DIR/subdomains/all.txt")"
+            merge_discovery_candidates
+            if [ "$before" != "$(cksum "$RECON_DIR/subdomains/all.txt")" ]; then
+                run_http_probe
+            fi
+        fi
         if [ "$status" = "ok" ]; then
             log_done "$name: $count result(s) in ${duration}s"
         else
@@ -653,11 +682,51 @@ cleanup_ffuf_workers() {
 }
 
 cleanup_auth_tmpfiles() {
+    cleanup_collectors
     cleanup_ffuf_workers
     [ -n "${JS_RESPONSE_TMP:-}" ] && rm -f -- "$JS_RESPONSE_TMP"
     [ -n "${WAFW00F_HEADERS_FILE:-}" ] && [ -f "$WAFW00F_HEADERS_FILE" ] && rm -f "$WAFW00F_HEADERS_FILE"
-    [ -n "${HTTPX_RUN_TMP:-}" ] && [ -f "$HTTPX_RUN_TMP" ] && rm -f "$HTTPX_RUN_TMP"
     return 0  # Always succeed: EXIT trap propagates its return code to the script
+}
+
+cleanup_collectors() {
+    [ "${#COLLECTOR_PIDS[@]}" -gt 0 ] || return 0
+    # Freeze owned trees before stopping them so a failed foreground probe
+    # cannot leave a collector (including timeout's separate group) writing.
+    python3 - "${COLLECTOR_PIDS[@]}" <<'PY_COLLECTOR_STOP'
+import os
+import signal
+import sys
+from pathlib import Path
+
+def stop(pid):
+    try:
+        os.kill(pid, signal.SIGSTOP)
+        children = Path(f"/proc/{pid}/task/{pid}/children").read_text().split()
+        for child in children:
+            stop(int(child))
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except FileNotFoundError:
+        pass
+
+for pid in sys.argv[1:]:
+    stop(int(pid))
+PY_COLLECTOR_STOP
+    local index status duration note
+    for index in "${!COLLECTOR_PIDS[@]}"; do
+        wait "${COLLECTOR_PIDS[$index]}" 2>/dev/null || true
+        status="partial"; duration=0; note="collector interrupted; prior and in-flight raw artifacts retained"
+        if [ -s "${COLLECTOR_META_FILES[$index]}" ]; then
+            IFS=$'\t' read -r status duration note < "${COLLECTOR_META_FILES[$index]}" || true
+        else
+            printf '%s\t%s\t%s\n' "$status" "$duration" "$note" > "${COLLECTOR_META_FILES[$index]}"
+        fi
+        record_recon_collector "${COLLECTOR_NAMES[$index]}" "$status" "${COLLECTOR_ARTIFACT_LABELS[$index]}" \
+            "$(artifact_line_count "${COLLECTOR_ARTIFACTS[$index]}")" "$duration" "$note"
+    done
+    COLLECTOR_PIDS=()
 }
 
 prepare_wafw00f_batch() {
@@ -827,7 +896,8 @@ run_xnlinkfinder() {
     local scope_file="$3"
     local output_file="$4"
     local target="$5"
-    local raw_output command_status filter_status=0
+    local results_file="$6"
+    local raw_output="${output_file}.upstream" capture="${output_file}.log" command_status=0
     local command=(
         -sf "$scope_file"
         # xnLinkFinder 的 depth=1 只请求显式输入；depth>1 才递归请求发现的链接。
@@ -845,56 +915,82 @@ run_xnlinkfinder() {
         -op /dev/null
         -nb
         -all
-        -o cli
+        -vv
+        -ow
+        -o "$raw_output"
     )
 
-    raw_output="$(mktemp "${TMPDIR:-/tmp}/bbhunt-xnlinkfinder.XXXXXX")"
-    if [ "${xnlinkfinder_bin##*.}" = "py" ]; then
-        run_with_timeout 660 python3 "$xnlinkfinder_bin" "${command[@]}" < "$input_file" > "$raw_output" 2>> "$RECON_DIR/logs/xnlinkfinder.log"
-    else
-        run_with_timeout 660 "$xnlinkfinder_bin" "${command[@]}" < "$input_file" > "$raw_output" 2>> "$RECON_DIR/logs/xnlinkfinder.log"
-    fi
-    command_status=$?
-    if [ -s "$raw_output" ]; then
-        python3 - "$BASE_DIR" "$target" "$raw_output" "$output_file" <<'PY'
-from pathlib import Path
+    # This upstream suppresses response diagnostics without a terminal on stdout.
+    run_with_timeout 660 python3 - "$xnlinkfinder_bin" "$input_file" "$capture" "${command[@]}" <<'PY_XN_CAPTURE' || command_status=$?
+import errno
+import os
+import pty
+import subprocess
 import sys
 
-base_dir, target, source, output = sys.argv[1:]
-sys.path.insert(0, base_dir)
-from tools.scope_context import url_belongs_to_target
-
-kept = []
-for raw in Path(source).read_text(encoding="utf-8", errors="replace").splitlines():
-    value = raw.strip()
-    if not value:
-        continue
-    network_url = value.lower().startswith(("http://", "https://", "//"))
-    if not network_url or url_belongs_to_target(value, target):
-        kept.append(value)
-with Path(output).open("a", encoding="utf-8") as handle:
-    if kept:
-        handle.write("\n".join(kept) + "\n")
+binary, inputs, capture, *arguments = sys.argv[1:]
+command = ([sys.executable, binary] if binary.endswith(".py") else [binary]) + arguments
+os.umask(0o077)
+master, slave = pty.openpty()
+child = None
+try:
+    with open(inputs, "rb") as source, open(capture, "wb", buffering=0) as log:
+        try:
+            child = subprocess.Popen(command, stdin=source, stdout=slave, stderr=slave)
+        finally:
+            os.close(slave)
+        while True:
+            try:
+                block = os.read(master, 65536)
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    break
+                raise
+            if not block:
+                break
+            log.write(block)
+        code = child.wait()
+finally:
+    os.close(master)
+    if child is not None and child.poll() is None:
+        child.terminate()
+        try:
+            child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+raise SystemExit(code)
+PY_XN_CAPTURE
+    python3 - "$BASE_DIR" "$RECON_DIR" "$target" "$capture" "$input_file" "$raw_output" "$output_file" "$results_file" "$command_status" <<'PY'
+from pathlib import Path
+import sys
+base, recon, target, capture, seeds, raw, output, results, code = sys.argv[1:]
+sys.path.insert(0, base)
+from tools.recon_adapter import ReconAdapter
+ok = ReconAdapter(recon).publish_xnlinkfinder_receipts(
+    Path(capture), Path(seeds), Path(raw), Path(output), Path(results), int(code), target)
+raise SystemExit(0 if ok else 1)
 PY
-        filter_status=$?
-    fi
-    rm -f "$raw_output"
-    [ "$filter_status" -eq 0 ] || return "$filter_status"
-    return "$command_status"
 }
 
 TARGET="${1:?Usage: $0 <target-domain|ip|cidr|list-file> [--quick|--normal|--deep|--full]}"
 RECON_MODE_FLAG="${2:-}"
 RECON_COLLECT=""
+RECON_INPUT=""
 RECON_EXTRA_ARGS=()
 if [ "$#" -gt 2 ]; then
-    case "${3:-}:${4:-}:$#" in
-        --collect:katana:4|--collect:ffuf:4)
-            RECON_COLLECT="$4"
-            RECON_EXTRA_ARGS=(--collect "$RECON_COLLECT")
-            ;;
-        *) log_err "Expected --collect katana|ffuf after the profile"; exit 2 ;;
-    esac
+    if [ "${3:-}" != "--collect" ] || { [ "$#" -ne 4 ] && [ "$#" -ne 6 ]; }; then
+        log_err "Expected --collect STAGE [--input FILE] after the profile"; exit 2
+    fi
+    RECON_COLLECT="$4"
+    RECON_EXTRA_ARGS=(--collect "$RECON_COLLECT")
+    if [ "$#" -eq 6 ]; then
+        if [ "$5" != "--input" ] || [ ! -f "$6" ] || [ ! -r "$6" ]; then
+            log_err "--input requires a readable candidate file"; exit 2
+        fi
+        RECON_INPUT="$(realpath "$6")"
+        RECON_EXTRA_ARGS+=(--input "$RECON_INPUT")
+    fi
 fi
 case "$RECON_MODE_FLAG" in
     ""|--full)
@@ -919,7 +1015,7 @@ case "$RECON_MODE_FLAG" in
         ;;
 esac
 if [ -n "$RECON_COLLECT" ] && [ "$RECON_PROFILE" != "deep" ]; then
-    log_err "--collect requires --deep and an existing single-target live inventory"
+    log_err "--collect requires --deep and a single target"
     exit 2
 fi
 AMASS_ENABLED=0
@@ -949,6 +1045,21 @@ fi
 require_positive_integer BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS "$DIR_FUZZ_HARD_BUDGET_SECONDS"
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+RECON_PHASES="$(python3 - "$BASE_DIR" "$RECON_COLLECT" "$RECON_INPUT" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from tools.recon_gate import RECON_COLLECTIONS
+collect, input_file = sys.argv[2:]
+if collect and collect not in RECON_COLLECTIONS:
+    raise SystemExit('Unknown collection stage: ' + collect)
+if input_file:
+    if collect not in {'probe', 'katana', 'ffuf', 'config', 'ports', 'js'}:
+        raise SystemExit('--input is not supported by this collection stage')
+    Path(input_file).read_text(encoding='utf-8')
+print(' '.join(RECON_COLLECTIONS.values()))
+PY
+)"
 if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "recon" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$TARGET" ]; then
     exec python3 "$BASE_DIR/tools/runtime_phase_exec.py" \
         --repo-root "$BASE_DIR" --target "$TARGET" --phase recon -- \
@@ -1463,10 +1574,16 @@ print(target_storage_key(target))
 PY
 )"
 RECON_DIR="$BASE_DIR/recon/$RECON_TARGET_KEY"
-if [ -n "$RECON_COLLECT" ] && { [ "$TARGET_KIND" = "cidr" ] || [ ! -s "$RECON_DIR/live/urls.txt" ]; }; then
-    log_err "--collect requires an existing live URL inventory for a domain, URL or IP"
+if [ -n "$RECON_COLLECT" ] && [ "$TARGET_KIND" = "cidr" ]; then
+    log_err "--collect requires a domain, URL or IP; retain the existing CIDR page entry"
     exit 2
 fi
+case "$RECON_COLLECT" in
+    katana|ffuf|config|waf)
+        if [ ! -s "$RECON_DIR/live/urls.txt" ]; then
+            log_err "This collection stage requires live URLs; run probe first"; exit 2
+        fi ;;
+esac
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RAW_URL_DIR="$RECON_DIR/urls/raw"
 RAW_URLS_STAGING="$RAW_URL_DIR/.all.${TIMESTAMP}.txt"
@@ -1523,7 +1640,13 @@ if [ "$TARGET_KIND" = "cidr" ]; then
 fi
 
 if [ -n "$RECON_COLLECT" ]; then
-    touch "$RECON_MANIFEST"
+    if [ ! -s "$RECON_MANIFEST" ]; then
+        for phase in $RECON_PHASES; do
+            record_recon_phase "$phase" not_run "recon/${RECON_TARGET_KEY}/" 0 \
+                "not yet collected; Agent chooses applicable follow-up"
+        done
+    fi
+    touch "$RECON_MANIFEST" "$RECON_DIR/live/httpx_full.txt" "$DISCOVERY_HOSTS_FILE"
 elif [ "$TARGET_KIND" != "cidr" ]; then
     : > "$RECON_MANIFEST"
     touch "$RECON_DIR/live/httpx_full.txt"
@@ -1541,6 +1664,8 @@ fi
 # errors and a non-zero exit code, which makes hunt.py mis-report
 # "Recon: Skipped" even on successful URL collection.
 touch "$RECON_DIR/subdomains/all.txt" \
+      "$RECON_DIR/live/urls.txt" \
+      "$RECON_DIR/live/seed_urls.txt" \
       "$RECON_DIR/live/wafw00f.txt" \
       "$RECON_DIR/live/wafw00f_hits.txt" \
       "$RECON_DIR/live/waf_context.json" \
@@ -1548,6 +1673,7 @@ touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/live/unwaf_bypass_ips.txt" \
       "$RECON_DIR/ports/open_ports.txt" \
       "$RECON_DIR/ports/open_ports_naabu.txt" \
+      "$RECON_DIR/ports/open_ports_explicit.txt" \
       "$RECON_DIR/ports/open_ports_all.txt" \
       "$RECON_DIR/ports/open_host_ports.txt" \
       "$RECON_DIR/js/endpoints.txt" \
@@ -1589,11 +1715,7 @@ if [ -z "$RECON_COLLECT" ]; then
 : > "$RECON_DIR/urls/port_candidates.txt"
 : > "$RECON_DIR/urls/katana_targets.txt"
 : > "$RECON_DIR/urls/js_files_analysis.txt"
-: > "$RECON_DIR/js/endpoints.txt"
-: > "$RECON_DIR/js/endpoints_raw.txt"
-: > "$RECON_DIR/js/endpoint_sources.jsonl"
-: > "$RECON_DIR/js/potential_secrets.txt"
-: > "$RECON_DIR/js/linkfinder_endpoints.txt"
+# JS progress reuses the published evidence across complete and selected runs.
 : > "$RECON_DIR/js/request_targets.txt"
 fi
 # Routing candidates are rebuildable projections. recon_candidates.py publishes
@@ -1752,14 +1874,33 @@ collect_waymore_urls() {
         2> "$RECON_DIR/logs/waymore.log"
 }
 
+merge_discovery_candidates() {
+    local merged source
+    merged="$(mktemp "$RECON_DIR/subdomains/.all.XXXXXX")"
+    {
+        printf '%s\n' "$TARGET"
+        cat "$RECON_DIR/subdomains/all.txt"
+        for source in subfinder assetfinder amass crtsh chaos wayback_subs; do
+            append_artifact "$RECON_DIR/subdomains/${source}.txt" || return 1
+        done
+        append_artifact "$RECON_DIR/subdomains/dns-expansion/resolved.txt"
+    } | awk 'NF && !seen[$0]++' > "$merged"
+    build_target_owned_input "$merged" "$RECON_DIR/subdomains/all.txt" host
+    rm -f "$merged"
+}
+
 # Sampling state is derived collection progress, never vulnerability coverage.
 select_collection_batch() {
     local name="$1" input="$2" limit="$3" identity="$4"
     shift 4
+    local preference=()
+    if [ -n "${RECON_INPUT:-}" ] && [ "$name" != "live/probe" ] && [ "$name" != "ports/scan" ]; then
+        preference=(--prefer "$RECON_INPUT")
+    fi
     python3 "$BASE_DIR/tools/recon_target_selector.py" --select \
         --repo-root "$BASE_DIR" --target "$TARGET" --collection-identity "$identity" \
         --urls "$input" --limit "$limit" --state "$RECON_DIR/${name}_state.json" \
-        --plan "$RECON_DIR/${name}_plan.json" --targets "$RECON_DIR/${name}_targets.txt" "$@" \
+        --plan "$RECON_DIR/${name}_plan.json" --targets "$RECON_DIR/${name}_targets.txt" "${preference[@]}" "$@" \
         >> "$RECON_DIR/logs/sampling.log" 2>&1
 }
 
@@ -1802,6 +1943,265 @@ collect_katana_urls() {
 }
 
 
+run_http_probe() {
+recon_budget_checkpoint http_probe
+PROBE_ACCOUNTING=""
+if [ -n "$RECON_COLLECT" ]; then
+    PROBE_INPUT_TMP="$(mktemp "$RECON_DIR/live/.probe-input.XXXXXX")"
+    {
+        printf '%s\n' "$TARGET_HTTP_PROBE_INPUT"
+        cat "$RECON_DIR/subdomains/all.txt" "$RECON_DIR/live/probe_candidates.txt" "$RECON_DIR/urls/port_candidates.txt" 2>/dev/null || true
+        [ -z "$RECON_INPUT" ] || cat "$RECON_INPUT"
+    } | awk 'NF && !seen[$0]++' > "$PROBE_INPUT_TMP"
+    build_target_owned_input "$PROBE_INPUT_TMP" "$RECON_DIR/live/probe_candidates.txt" host
+    rm -f "$PROBE_INPUT_TMP"
+    select_collection_batch live/probe "$RECON_DIR/live/probe_candidates.txt" 100 "puredns-httpx-v1"
+    HTTPX_INPUT_FILE="$RECON_DIR/live/probe_http.txt"
+    PROBE_DNS_INPUT="$RECON_DIR/live/probe_dns.txt"
+    python3 - "$RECON_DIR/live/probe_targets.txt" "$PROBE_DNS_INPUT" "$HTTPX_INPUT_FILE" <<'PY_PROBE_INPUT'
+from pathlib import Path
+from urllib.parse import urlsplit
+import ipaddress
+import sys
+source, dns_path, http_path = map(Path, sys.argv[1:])
+dns, explicit = set(), []
+for value in source.read_text(encoding="utf-8").splitlines():
+    parsed = urlsplit(value if "://" in value else "//" + value)
+    host = parsed.hostname
+    if not host:
+        raise ValueError("Probe input has no hostname")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        if not parsed.scheme and parsed.port is None:
+            dns.add(host)
+    if parsed.scheme or parsed.port is not None or host not in dns:
+        explicit.append(value)
+dns_path.write_text("".join(host + "\n" for host in sorted(dns)), encoding="utf-8")
+http_path.write_text("".join(value + "\n" for value in explicit), encoding="utf-8")
+PY_PROBE_INPUT
+else
+    PROBE_DNS_INPUT="$RECON_DIR/subdomains/all.txt"
+fi
+echo ""
+log_info "Phase 2: HTTP Probing"
+
+PUREDNS_STATUS="skipped"
+PUREDNS_NOTE="puredns not applicable to this target"
+PUREDNS_DURATION=0
+PUREDNS_OUTPUT_FILE="$RECON_DIR/live/puredns_resolved.txt"
+if [ -s "$PROBE_DNS_INPUT" ] && { [ "$TARGET_KIND" = "domain" ] || [ -n "$RECON_COLLECT" ]; }; then
+    if command -v puredns &>/dev/null && [ -s "$PROBE_DNS_INPUT" ]; then
+        PUREDNS_CURRENT_FILE="$(mktemp "$RECON_DIR/live/.puredns.XXXXXX")"
+        PUREDNS_STARTED=$(date +%s)
+        log_step "Resolving hosts with puredns (massdns + wildcard filtering)..."
+        # puredns resolve: massdns first pass with public resolvers, then wildcard
+        # filtering, then verification with trusted resolvers. Default resolver
+        # files at /root/.config/puredns/{resolvers,resolvers-trusted}.txt; quiet
+        # mode keeps stdout clean for log capture.
+        set +e
+        run_with_timeout 180 puredns resolve "$PROBE_DNS_INPUT" \
+            --rate-limit "$RATE_LIMIT" \
+            --quiet \
+            --write "$PUREDNS_CURRENT_FILE" \
+            >/dev/null 2>&1
+        PUREDNS_EXIT_CODE=$?
+        set -e
+        PUREDNS_DURATION=$(( $(date +%s) - PUREDNS_STARTED ))
+        if [ -s "$PUREDNS_CURRENT_FILE" ]; then
+            tr '[:upper:]' '[:lower:]' < "$PUREDNS_CURRENT_FILE" \
+                | sed 's/\.$//' | awk 'NF && !seen[$0]++' > "${PUREDNS_CURRENT_FILE}.normalized"
+            mv -f "${PUREDNS_CURRENT_FILE}.normalized" "$PUREDNS_CURRENT_FILE"
+        fi
+        if [ "$PUREDNS_EXIT_CODE" -eq 0 ]; then
+            PUREDNS_STATUS="ok"
+            PUREDNS_NOTE="current run completed; exit_code=0"
+        else
+            PUREDNS_STATUS="partial"
+            PUREDNS_NOTE="current run exited $PUREDNS_EXIT_CODE; raw candidates and prior results retained"
+        fi
+        if [ -n "$RECON_COLLECT" ]; then
+            { append_artifact "$PUREDNS_OUTPUT_FILE"; cat "$PUREDNS_CURRENT_FILE"; } \
+                | awk 'NF && !seen[$0]++' > "${PUREDNS_OUTPUT_FILE}.tmp"
+            mv -f "${PUREDNS_OUTPUT_FILE}.tmp" "$PUREDNS_OUTPUT_FILE"
+            cat "$PUREDNS_CURRENT_FILE" >> "$HTTPX_INPUT_FILE"
+            { cat "$DISCOVERY_HOSTS_FILE" "$PUREDNS_CURRENT_FILE"; } \
+                | awk 'NF && !seen[$0]++' > "${DISCOVERY_HOSTS_FILE}.tmp"
+            mv -f "${DISCOVERY_HOSTS_FILE}.tmp" "$DISCOVERY_HOSTS_FILE"
+            rm -f "$PUREDNS_CURRENT_FILE"
+        elif [ "$PUREDNS_EXIT_CODE" -eq 0 ] || [ -s "$PUREDNS_CURRENT_FILE" ]; then
+            mv -f "$PUREDNS_CURRENT_FILE" "$PUREDNS_OUTPUT_FILE"
+            cp "$PUREDNS_OUTPUT_FILE" "$DISCOVERY_HOSTS_FILE"
+            HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
+        else
+            rm -f "$PUREDNS_CURRENT_FILE"
+        fi
+    else
+        if ! command -v puredns >/dev/null 2>&1; then
+            PUREDNS_STATUS="unavailable"
+            PUREDNS_NOTE="puredns unavailable; scoped raw hosts used"
+        else
+            PUREDNS_NOTE="no scoped host candidates; puredns skipped"
+        fi
+        if [ -n "$RECON_COLLECT" ] && ! command -v puredns >/dev/null 2>&1; then
+            cat "$PROBE_DNS_INPUT" >> "$HTTPX_INPUT_FILE"
+        fi
+        log_warn "puredns unavailable or no pending DNS candidates; raw fallback is recorded separately"
+        log_warn "Install: GOBIN=\"\$HOME/go/bin\" go install github.com/d3mondev/puredns/v2@latest"
+    fi
+fi
+if [ -z "$RECON_COLLECT" ] || [ "$PUREDNS_STATUS" != "skipped" ]; then
+record_recon_collector \
+    puredns \
+    "$PUREDNS_STATUS" \
+    "recon/${RECON_TARGET_KEY}/live/puredns_resolved.txt" \
+    "$(artifact_line_count "$PUREDNS_OUTPUT_FILE")" \
+    "$PUREDNS_DURATION" \
+    "$PUREDNS_NOTE"
+fi
+
+HTTP_STATUS="skipped"
+HTTPX_EXIT_CODE=""
+HTTP_NOTE="httpx skipped: discovery host input is empty"
+HTTPX_OUTPUT_FILE="$RECON_DIR/live/httpx_full.txt"
+if [ "$TARGET_KIND" = "cidr" ]; then
+    HTTPX_OUTPUT_FILE="$RECON_DIR/live/cidr_pages/${CIDR_OFFSET}.httpx.txt"
+else
+    mkdir -p "$RECON_DIR/live/httpx_runs"
+    HTTPX_OUTPUT_FILE="$(mktemp "$RECON_DIR/live/httpx_runs/run.XXXXXX.txt")"
+fi
+if [ ! -s "$HTTPX_INPUT_FILE" ]; then
+    log_warn "Discovery host list is empty — skipping downstream probing"
+elif [ -n "$HTTPX_BIN" ]; then
+    log_step "Probing with ProjectDiscovery httpx (status, title, tech, content-length)..."
+    : > "$HTTPX_OUTPUT_FILE"
+    set +e
+    HTTPX_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 180 || echo 300)
+    run_with_timeout "$HTTPX_RUN_TIMEOUT" "$HTTPX_BIN" -l "$HTTPX_INPUT_FILE" \
+        -silent -no-color -disable-update-check -no-fallback-scheme \
+        -status-code \
+        -title \
+        -tech-detect \
+        -content-length \
+        -threads "$THREADS" \
+        -rate-limit "$RATE_LIMIT" \
+        "${BB_AUTH_ARGS[@]}" \
+        -o "$HTTPX_OUTPUT_FILE" 2>/dev/null
+    HTTPX_EXIT_CODE=$?
+    set -e
+
+    if [ "$HTTPX_EXIT_CODE" -eq 0 ]; then
+        HTTP_STATUS="ok"
+        HTTP_NOTE="httpx completed successfully; exit_code=0"
+    elif [ "$HTTPX_EXIT_CODE" -eq 124 ]; then
+        HTTP_STATUS="partial"
+        HTTP_NOTE="httpx timeout; exit_code=124; partial output preserved"
+    elif [ -s "$HTTPX_OUTPUT_FILE" ]; then
+        HTTP_STATUS="partial"
+        HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; current partial output preserved"
+    else
+        HTTP_STATUS="failed"
+        HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; no current results"
+    fi
+
+else
+    HTTP_NOTE="httpx skipped: ProjectDiscovery binary is unavailable"
+    log_warn "ProjectDiscovery httpx not installed — skipping"
+fi
+
+# Publish one non-CIDR HTTP generation only after the current collector has a
+# complete result or useful partial output. A skipped/failed empty run keeps the
+# last-known live surface while its current failure remains explicit in manifest.
+if [ -n "$RECON_COLLECT" ]; then
+    PROBE_RESULTS="$RECON_DIR/live/probe_results.tsv"
+    if python3 "$BASE_DIR/tools/recon_adapter.py" --recon-dir "$RECON_DIR" --httpx-receipts \
+        --capture "$HTTPX_OUTPUT_FILE" --seeds "$RECON_DIR/live/probe_targets.txt" \
+        --results "$PROBE_RESULTS" --exit-code "${HTTPX_EXIT_CODE:-1}"; then
+        record_collection_batch live/probe "$PROBE_RESULTS"
+    else
+        HTTP_STATUS="partial"
+        HTTP_NOTE="$HTTP_NOTE; invalid response receipts; progress not advanced"
+    fi
+    PROBE_ACCOUNTING="$(collection_accounting live/probe)"
+    HTTP_NOTE="$HTTP_NOTE; $PROBE_ACCOUNTING; continuation=next probe batch; closure_blocking=false"
+    if [ ! -s "$RECON_DIR/live/probe_targets.txt" ]; then
+        HTTP_STATUS="ok"
+    elif [ "$PUREDNS_STATUS" = "ok" ] && [ ! -s "$HTTPX_INPUT_FILE" ]; then
+        HTTP_STATUS="ok"
+        HTTP_NOTE="$HTTP_NOTE; resolver returned no usable host; inputs retained for review"
+    fi
+elif [ "$TARGET_KIND" != "cidr" ]; then
+    if [ "$HTTP_STATUS" = "ok" ] || { [ "$HTTP_STATUS" = "partial" ] && [ -s "$HTTPX_OUTPUT_FILE" ]; }; then
+        cp "$HTTPX_OUTPUT_FILE" "$RECON_DIR/live/httpx_full.txt.tmp"
+        mv "$RECON_DIR/live/httpx_full.txt.tmp" "$RECON_DIR/live/httpx_full.txt"
+        HTTP_NOTE="$HTTP_NOTE; published current generation"
+    else
+        if [ -s "$RECON_DIR/live/httpx_full.txt" ]; then
+            HTTP_NOTE="$HTTP_NOTE; retained prior live artifact as last-known"
+        else
+            HTTP_NOTE="$HTTP_NOTE; no prior live artifact available"
+        fi
+    fi
+fi
+
+# Each CIDR invocation owns one page. Rebuild the canonical probe artifact from
+# every preserved page so later consumers never see only the newest slice.
+if [ "$TARGET_KIND" = "cidr" ]; then
+    CIDR_HTTPX_PAGE_FILES=("$RECON_DIR"/live/cidr_pages/*.httpx.txt)
+    if [ -e "${CIDR_HTTPX_PAGE_FILES[0]}" ]; then
+        LC_ALL=C sort -u "${CIDR_HTTPX_PAGE_FILES[@]}" > "$RECON_DIR/live/httpx_full.txt.tmp"
+        mv "$RECON_DIR/live/httpx_full.txt.tmp" "$RECON_DIR/live/httpx_full.txt"
+    fi
+fi
+
+# Derive every summary view from the canonical union, including continuation
+# runs where httpx was skipped and prior pages remain authoritative.
+if [ -z "$RECON_COLLECT" ]; then
+    awk '$1 ~ /^https?:\/\// && !seen[$1]++ {print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt.tmp"
+    mv "$RECON_DIR/live/urls.txt.tmp" "$RECON_DIR/live/urls.txt"
+    ensure_explicit_port_seed_live
+fi
+grep '\[200\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_200.txt" 2>/dev/null || true
+grep '\[30[12]\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_3xx.txt" 2>/dev/null || true
+grep '\[403\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_403.txt" 2>/dev/null || true
+grep '\[401\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_401.txt" 2>/dev/null || true
+
+LIVE_COUNT=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)
+if [ -n "$HTTPX_EXIT_CODE" ]; then
+    if [ "$HTTP_STATUS" = "ok" ]; then
+        log_done "Live hosts: $LIVE_COUNT"
+    else
+        log_warn "HTTP probing $HTTP_STATUS (exit=$HTTPX_EXIT_CODE); preserved $LIVE_COUNT live URL(s)"
+    fi
+    log_done "200 OK: $(wc -l < "$RECON_DIR/live/status_200.txt" 2>/dev/null || echo 0)"
+    log_done "3xx Redirect: $(wc -l < "$RECON_DIR/live/status_3xx.txt" 2>/dev/null || echo 0)"
+    log_done "403 Forbidden: $(wc -l < "$RECON_DIR/live/status_403.txt" 2>/dev/null || echo 0)"
+    log_done "401 Auth Required: $(wc -l < "$RECON_DIR/live/status_401.txt" 2>/dev/null || echo 0)"
+fi
+
+LIVE_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
+RESOLVED_TOTAL=$(wc -l < "$DISCOVERY_HOSTS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+if [ "$HTTP_STATUS" = "ok" ]; then
+    HTTP_NOTE="$HTTP_NOTE; live_hosts=$LIVE_TOTAL"
+    [ "$LIVE_TOTAL" -ne 0 ] || HTTP_NOTE="$HTTP_NOTE; successful zero is not target closure"
+fi
+record_recon_phase \
+    http_probing \
+    "$HTTP_STATUS" \
+    "recon/${RECON_TARGET_KEY}/live/urls.txt" \
+    "$LIVE_TOTAL" \
+    "$HTTP_NOTE"
+emit_claude_hint \
+    phase                http_probing \
+    status               "$HTTP_STATUS" \
+    httpx_exit_code      "${HTTPX_EXIT_CODE:-not-run}" \
+    resolved_hosts_total "$RESOLVED_TOTAL" \
+    live_hosts_total     "$LIVE_TOTAL" \
+    httpx_present        "$([ -n "$HTTPX_BIN" ] && echo true || echo false)" \
+    puredns_present      "$(command -v puredns >/dev/null 2>&1 && echo true || echo false)"
+
+}
+
 echo "============================================="
 echo "  Recon Engine — $TARGET"
 echo "  Output: $RECON_DIR/"
@@ -1821,7 +2221,7 @@ record_recon_phase \
 # ============================================================
 # Phase 1: Subdomain Enumeration
 # ============================================================
-if [ -z "$RECON_COLLECT" ]; then
+if collects discover; then
 recon_budget_checkpoint subdomain_enum
 log_info "Phase 1: Subdomain Enumeration"
 
@@ -1838,23 +2238,22 @@ if [ "$TARGET_KIND" = "domain" ]; then
         "recon/${RECON_TARGET_KEY}/subdomains/chaos.txt" collect_chaos
     start_collector wayback_subdomains "$RECON_DIR/subdomains/wayback_subs.txt" \
         "recon/${RECON_TARGET_KEY}/subdomains/wayback_subs.txt" collect_wayback_subdomains
+    if [ "$RECON_COLLECT" = "discover" ]; then
+        start_collector gau "$RECON_DIR/urls/gau.txt" \
+            "recon/${RECON_TARGET_KEY}/urls/gau.txt" collect_gau_urls
+        start_collector wayback_urls "$RECON_DIR/urls/wayback.txt" \
+            "recon/${RECON_TARGET_KEY}/urls/wayback.txt" collect_wayback_urls
+        start_collector waymore "$RECON_DIR/urls/waymore.txt" \
+            "recon/${RECON_TARGET_KEY}/urls/waymore.txt" collect_waymore_urls
+        run_http_probe
+    fi
     wait_collector_group
+    if [ "$RECON_COLLECT" = "discover" ]; then
+        record_recon_phase url_history ok "recon/${RECON_TARGET_KEY}/urls/" 0 \
+            "historical collectors; per-source failures remain visible"
+    fi
 
-    SUBDOMAIN_MERGED_TMP="$(mktemp "$RECON_DIR/subdomains/.all.XXXXXX")"
-    {
-        printf '%s\n' "$TARGET"
-        cat \
-        "$RECON_DIR/subdomains/subfinder.txt" \
-        "$RECON_DIR/subdomains/assetfinder.txt" \
-        "$RECON_DIR/subdomains/amass.txt" \
-        "$RECON_DIR/subdomains/crtsh.txt" \
-        "$RECON_DIR/subdomains/chaos.txt" \
-        "$RECON_DIR/subdomains/wayback_subs.txt" \
-        "$RECON_DIR/subdomains/dns-expansion/resolved.txt" \
-        2>/dev/null
-    } | awk 'NF' | sort -u > "$SUBDOMAIN_MERGED_TMP" || true
-    build_target_owned_input "$SUBDOMAIN_MERGED_TMP" "$RECON_DIR/subdomains/all.txt" host
-    rm -f "$SUBDOMAIN_MERGED_TMP"
+    merge_discovery_candidates
     TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
     log_ok "Total unique subdomains: $TOTAL_SUBS"
 elif [ "$TARGET_KIND" = "url" ]; then
@@ -1986,202 +2385,15 @@ sync_observation_inventory subdomain_enum
 # ============================================================
 # Phase 2: HTTP Probing
 # ============================================================
-recon_budget_checkpoint http_probe
-echo ""
-log_info "Phase 2: HTTP Probing"
-
-PUREDNS_STATUS="skipped"
-PUREDNS_NOTE="puredns not applicable to this target"
-PUREDNS_DURATION=0
-PUREDNS_OUTPUT_FILE="$RECON_DIR/live/puredns_resolved.txt"
-if [ "$TARGET_KIND" = "domain" ]; then
-    if command -v puredns &>/dev/null && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
-        PUREDNS_CURRENT_FILE="$(mktemp "$RECON_DIR/live/.puredns.XXXXXX")"
-        PUREDNS_STARTED=$(date +%s)
-        log_step "Resolving hosts with puredns (massdns + wildcard filtering)..."
-        # puredns resolve: massdns first pass with public resolvers, then wildcard
-        # filtering, then verification with trusted resolvers. Default resolver
-        # files at /root/.config/puredns/{resolvers,resolvers-trusted}.txt; quiet
-        # mode keeps stdout clean for log capture.
-        set +e
-        run_with_timeout 180 puredns resolve "$RECON_DIR/subdomains/all.txt" \
-            --rate-limit "$RATE_LIMIT" \
-            --quiet \
-            --write "$PUREDNS_CURRENT_FILE" \
-            >/dev/null 2>&1
-        PUREDNS_EXIT_CODE=$?
-        set -e
-        PUREDNS_DURATION=$(( $(date +%s) - PUREDNS_STARTED ))
-        # Normalize: strip trailing dot, lowercase, dedupe.
-        if [ -s "$PUREDNS_CURRENT_FILE" ]; then
-            tr '[:upper:]' '[:lower:]' < "$PUREDNS_CURRENT_FILE" \
-                | sed 's/\.$//' | awk 'NF' | sort -u > "$DISCOVERY_HOSTS_FILE" || true
-        fi
-        if [ "$PUREDNS_EXIT_CODE" -eq 0 ]; then
-            mv -f "$PUREDNS_CURRENT_FILE" "$PUREDNS_OUTPUT_FILE"
-            PUREDNS_STATUS="ok"
-            PUREDNS_NOTE="current run completed; exit_code=0"
-        elif [ -s "$PUREDNS_CURRENT_FILE" ]; then
-            mv -f "$PUREDNS_CURRENT_FILE" "$PUREDNS_OUTPUT_FILE"
-            PUREDNS_STATUS="partial"
-            PUREDNS_NOTE="current run exited $PUREDNS_EXIT_CODE; current partial output published"
-        else
-            rm -f "$PUREDNS_CURRENT_FILE"
-            PUREDNS_STATUS=$([ "$PUREDNS_EXIT_CODE" -eq 124 ] && echo partial || echo error)
-            PUREDNS_NOTE="current run exited $PUREDNS_EXIT_CODE without results; prior canonical artifact preserved"
-        fi
-        PUREDNS_COUNT=$(wc -l < "$DISCOVERY_HOSTS_FILE" 2>/dev/null || echo 0)
-        if [ "$PUREDNS_COUNT" -gt 0 ]; then
-            HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
-            log_done "puredns resolved: $PUREDNS_COUNT hosts (wildcards filtered)"
-        else
-            log_warn "puredns found no resolvable hosts — falling back to raw candidates"
-        fi
-    else
-        if ! command -v puredns >/dev/null 2>&1; then
-            PUREDNS_STATUS="unavailable"
-            PUREDNS_NOTE="puredns unavailable; scoped raw hosts used"
-        else
-            PUREDNS_NOTE="no scoped host candidates; puredns skipped"
-        fi
-        log_warn "puredns not installed or no host candidates — using raw hosts for httpx"
-        log_warn "Install: GOBIN=\"\$HOME/go/bin\" go install github.com/d3mondev/puredns/v2@latest"
-    fi
 fi
-record_recon_collector \
-    puredns \
-    "$PUREDNS_STATUS" \
-    "recon/${RECON_TARGET_KEY}/live/puredns_resolved.txt" \
-    "$(artifact_line_count "$PUREDNS_OUTPUT_FILE")" \
-    "$PUREDNS_DURATION" \
-    "$PUREDNS_NOTE"
-
-HTTP_STATUS="skipped"
-HTTPX_EXIT_CODE=""
-HTTP_NOTE="httpx skipped: discovery host input is empty"
-HTTPX_OUTPUT_FILE="$RECON_DIR/live/httpx_full.txt"
-HTTPX_RUN_TMP=""
-if [ "$TARGET_KIND" = "cidr" ]; then
-    HTTPX_OUTPUT_FILE="$RECON_DIR/live/cidr_pages/${CIDR_OFFSET}.httpx.txt"
-else
-    HTTPX_RUN_TMP="$(mktemp "$RECON_DIR/live/.httpx.XXXXXX")"
-    HTTPX_OUTPUT_FILE="$HTTPX_RUN_TMP"
+if collects probe || [ "$RECON_COLLECT" = "discover" ]; then
+    run_http_probe
 fi
-if [ ! -s "$HTTPX_INPUT_FILE" ]; then
-    log_warn "Discovery host list is empty — skipping downstream probing"
-elif [ -n "$HTTPX_BIN" ]; then
-    log_step "Probing with ProjectDiscovery httpx (status, title, tech, content-length)..."
-    : > "$HTTPX_OUTPUT_FILE"
-    set +e
-    HTTPX_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 180 || echo 300)
-    run_with_timeout "$HTTPX_RUN_TIMEOUT" "$HTTPX_BIN" -l "$HTTPX_INPUT_FILE" \
-        -silent \
-        -status-code \
-        -title \
-        -tech-detect \
-        -content-length \
-        -follow-host-redirects \
-        -threads "$THREADS" \
-        -rate-limit "$RATE_LIMIT" \
-        "${BB_AUTH_ARGS[@]}" \
-        -o "$HTTPX_OUTPUT_FILE" 2>/dev/null
-    HTTPX_EXIT_CODE=$?
-    set -e
-
-    if [ "$HTTPX_EXIT_CODE" -eq 0 ]; then
-        HTTP_STATUS="ok"
-        HTTP_NOTE="httpx completed successfully; exit_code=0"
-    elif [ "$HTTPX_EXIT_CODE" -eq 124 ]; then
-        HTTP_STATUS="partial"
-        HTTP_NOTE="httpx timeout; exit_code=124; partial output preserved"
-    elif [ -s "$HTTPX_OUTPUT_FILE" ]; then
-        HTTP_STATUS="partial"
-        HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; current partial output preserved"
-    else
-        HTTP_STATUS="failed"
-        HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; no current results"
-    fi
-
-else
-    HTTP_NOTE="httpx skipped: ProjectDiscovery binary is unavailable"
-    log_warn "ProjectDiscovery httpx not installed — skipping"
-fi
-
-# Publish one non-CIDR HTTP generation only after the current collector has a
-# complete result or useful partial output. A skipped/failed empty run keeps the
-# last-known live surface while its current failure remains explicit in manifest.
-if [ "$TARGET_KIND" != "cidr" ]; then
-    if [ "$HTTP_STATUS" = "ok" ] || { [ "$HTTP_STATUS" = "partial" ] && [ -s "$HTTPX_OUTPUT_FILE" ]; }; then
-        mv "$HTTPX_OUTPUT_FILE" "$RECON_DIR/live/httpx_full.txt"
-        HTTPX_RUN_TMP=""
-        HTTP_NOTE="$HTTP_NOTE; published current generation"
-    else
-        rm -f "$HTTPX_OUTPUT_FILE"
-        HTTPX_RUN_TMP=""
-        if [ -s "$RECON_DIR/live/httpx_full.txt" ]; then
-            HTTP_NOTE="$HTTP_NOTE; retained prior live artifact as last-known"
-        else
-            HTTP_NOTE="$HTTP_NOTE; no prior live artifact available"
-        fi
-    fi
-fi
-
-# Each CIDR invocation owns one page. Rebuild the canonical probe artifact from
-# every preserved page so later consumers never see only the newest slice.
-if [ "$TARGET_KIND" = "cidr" ]; then
-    CIDR_HTTPX_PAGE_FILES=("$RECON_DIR"/live/cidr_pages/*.httpx.txt)
-    if [ -e "${CIDR_HTTPX_PAGE_FILES[0]}" ]; then
-        LC_ALL=C sort -u "${CIDR_HTTPX_PAGE_FILES[@]}" > "$RECON_DIR/live/httpx_full.txt.tmp"
-        mv "$RECON_DIR/live/httpx_full.txt.tmp" "$RECON_DIR/live/httpx_full.txt"
-    fi
-fi
-
-# Derive every summary view from the canonical union, including continuation
-# runs where httpx was skipped and prior pages remain authoritative.
-awk '$1 ~ /^https?:\/\// {print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
-ensure_explicit_port_seed_live
-grep '\[200\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_200.txt" 2>/dev/null || true
-grep '\[30[12]\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_3xx.txt" 2>/dev/null || true
-grep '\[403\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_403.txt" 2>/dev/null || true
-grep '\[401\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_401.txt" 2>/dev/null || true
-
-LIVE_COUNT=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)
-if [ -n "$HTTPX_EXIT_CODE" ]; then
-    if [ "$HTTP_STATUS" = "ok" ]; then
-        log_done "Live hosts: $LIVE_COUNT"
-    else
-        log_warn "HTTP probing $HTTP_STATUS (exit=$HTTPX_EXIT_CODE); preserved $LIVE_COUNT live URL(s)"
-    fi
-    log_done "200 OK: $(wc -l < "$RECON_DIR/live/status_200.txt" 2>/dev/null || echo 0)"
-    log_done "3xx Redirect: $(wc -l < "$RECON_DIR/live/status_3xx.txt" 2>/dev/null || echo 0)"
-    log_done "403 Forbidden: $(wc -l < "$RECON_DIR/live/status_403.txt" 2>/dev/null || echo 0)"
-    log_done "401 Auth Required: $(wc -l < "$RECON_DIR/live/status_401.txt" 2>/dev/null || echo 0)"
-fi
-
-LIVE_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
-RESOLVED_TOTAL=$(wc -l < "$DISCOVERY_HOSTS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
-if [ "$HTTP_STATUS" = "ok" ]; then
-    HTTP_NOTE="$HTTP_NOTE; live_hosts=$LIVE_TOTAL"
-    [ "$LIVE_TOTAL" -ne 0 ] || HTTP_NOTE="$HTTP_NOTE; successful zero is not target closure"
-fi
-record_recon_phase \
-    http_probing \
-    "$HTTP_STATUS" \
-    "recon/${RECON_TARGET_KEY}/live/urls.txt" \
-    "$LIVE_TOTAL" \
-    "$HTTP_NOTE"
-emit_claude_hint \
-    phase                http_probing \
-    status               "$HTTP_STATUS" \
-    httpx_exit_code      "${HTTPX_EXIT_CODE:-not-run}" \
-    resolved_hosts_total "$RESOLVED_TOTAL" \
-    live_hosts_total     "$LIVE_TOTAL" \
-    httpx_present        "$([ -n "$HTTPX_BIN" ] && echo true || echo false)" \
-    puredns_present      "$(command -v puredns >/dev/null 2>&1 && echo true || echo false)"
 
 # ============================================================
 # Phase 2.5: WAF Fingerprinting
 # ============================================================
+if collects waf; then
 recon_budget_checkpoint waf_fp
 echo ""
 log_info "Phase 2.5: WAF Fingerprinting"
@@ -2540,6 +2752,8 @@ emit_claude_hint \
 # ============================================================
 # Phase 2.6: Origin Discovery
 # ============================================================
+fi
+if collects origin; then
 recon_budget_checkpoint origin_discovery
 echo ""
 log_info "Phase 2.6: Origin Discovery"
@@ -2557,6 +2771,8 @@ UNWAF_SKIP=1
 if [ "$UNWAF_SKIP" -eq 1 ]; then
     log_warn "unwaf origin discovery is disabled by default — set BBHUNT_ENABLE_UNWAF=1 to run it"
 elif command -v unwaf &>/dev/null; then
+    archive_collector_artifact "$RECON_DIR/live/unwaf.json"
+    archive_collector_artifact "$RECON_DIR/live/unwaf_bypass_ips.txt"
     UNWAF_JSON_FILE="$RECON_DIR/live/unwaf.json"
     UNWAF_IPS_FILE="$RECON_DIR/live/unwaf_bypass_ips.txt"
     UNWAF_TARGETS_FILE="$RECON_DIR/live/unwaf_targets.txt"
@@ -2649,6 +2865,7 @@ PY
     fi
 else
     log_warn "unwaf not installed — skipping origin discovery"
+    UNWAF_STATUS="unavailable"
 fi
 
 if [ -s "$ORIGIN_HISTORY_FILE" ]; then
@@ -2660,7 +2877,7 @@ ORIGIN_CANDS_FILE="$RECON_DIR/live/origin_candidates.txt"
 ORIGIN_CANDS=$(wc -l < "$ORIGIN_CANDS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
 ORIGIN_PHASE_STATUS="skipped"
 if [ "$UNWAF_ENABLE" -eq 1 ]; then
-    ORIGIN_PHASE_STATUS="${UNWAF_STATUS:-ok}"
+    ORIGIN_PHASE_STATUS="${UNWAF_STATUS:-skipped}"
 fi
 record_recon_phase \
     origin_disco \
@@ -2678,6 +2895,8 @@ emit_claude_hint \
 # ============================================================
 # Phase 3: Port Scanning
 # ============================================================
+fi
+if collects ports; then
 recon_budget_checkpoint port_scan
 echo ""
 log_info "Phase 3: Port Scanning"
@@ -2688,6 +2907,41 @@ NAABU_INPUT_TOTAL=0
 NAABU_SELECTED=0
 NMAP_STATUS="skipped"
 NMAP_NOTE="not run"
+PORT_ACCOUNTING=""
+PORT_BATCH=0
+if [ "$RECON_COLLECT" = "ports" ] && [ "$TARGET_KIND" != "url" ] && [ "$TARGET_HAS_EXPLICIT_PORT" != "true" ]; then
+    PORT_BATCH=1
+    python3 - "$RECON_DIR" "$TARGET" "$RECON_INPUT" <<'PY_PORT_INPUT'
+from pathlib import Path
+from urllib.parse import urlsplit
+import sys
+root, target, supplied = sys.argv[1:]
+root = Path(root)
+def hosts(lines):
+    values = []
+    for line in lines:
+        value = line.strip()
+        if not value:
+            continue
+        parsed = urlsplit(value if "://" in value else "//" + value)
+        if parsed.hostname:
+            host = parsed.hostname.lower()
+            values.append("[" + host + "]" if ":" in host else host)
+    return list(dict.fromkeys(values))
+lines = [target]
+for path in ("subdomains/all.txt", "live/discovery_hosts.txt", "live/urls.txt"):
+    source = root / path
+    if source.is_file():
+        lines.extend(source.read_text(encoding="utf-8").splitlines())
+(root / "ports/scan_inventory.txt").write_text("".join(host + "\n" for host in hosts(lines)), encoding="utf-8")
+if supplied:
+    (root / "ports/scan_preferred.txt").write_text("".join(host + "\n" for host in hosts(Path(supplied).read_text(encoding="utf-8").splitlines())), encoding="utf-8")
+PY_PORT_INPUT
+    PORT_PREFERENCE=()
+    [ -z "$RECON_INPUT" ] || PORT_PREFERENCE=(--prefer "$RECON_DIR/ports/scan_preferred.txt")
+    select_collection_batch ports/scan "$RECON_DIR/ports/scan_inventory.txt" 100 "ports-top1000-v1" "${PORT_PREFERENCE[@]}"
+    : > "$RECON_DIR/ports/scan_results.tsv"
+fi
 if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
     log_warn "Skipping broad naabu scan for exact URL/explicit-port target"
     if [ -n "$TARGET_EXPLICIT_PORT" ]; then
@@ -2718,7 +2972,9 @@ elif command -v naabu &>/dev/null; then
     NAABU_MAX_TARGETS=$([ "$QUICK_MODE" = "--quick" ] && echo 20 || echo 100)
     NAABU_TOP_PORTS=$([ "$QUICK_MODE" = "--quick" ] && echo 100 || echo 1000)
 
-    if [ -s "$RECON_DIR/live/urls.txt" ]; then
+    if [ "$PORT_BATCH" -eq 1 ]; then
+        cp "$RECON_DIR/ports/scan_targets.txt" "$NAABU_TARGETS_FILE"
+    elif [ -s "$RECON_DIR/live/urls.txt" ]; then
         python3 - "$RECON_DIR/live/urls.txt" "$NAABU_TARGETS_FILE" "$NAABU_MAX_TARGETS" <<'PY'
 from pathlib import Path
 from urllib.parse import urlparse
@@ -2769,7 +3025,16 @@ PY
             -o "$NAABU_CURRENT_FILE" 2>/dev/null
         NAABU_EXIT_CODE=$?
         set -e
+        if [ "$PORT_BATCH" -eq 1 ] && [ "$NAABU_EXIT_CODE" -eq 0 ]; then
+            sed -nE 's/:([0-9]+)$//p' "$NAABU_CURRENT_FILE" | sort -u \
+                | awk 'NF {print $0 "\tok"}' >> "$RECON_DIR/ports/scan_results.tsv"
+        fi
         NAABU_PUBLISHED="false"
+        archive_collector_artifact "$NAABU_OUTPUT_FILE"
+        if [ "$PORT_BATCH" -eq 1 ] && { [ "$NAABU_EXIT_CODE" -eq 0 ] || [ -s "$NAABU_CURRENT_FILE" ]; }; then
+            { append_artifact "$NAABU_OUTPUT_FILE"; cat "$NAABU_CURRENT_FILE"; } | awk 'NF && !seen[$0]++' > "${NAABU_CURRENT_FILE}.merged"
+            mv -f "${NAABU_CURRENT_FILE}.merged" "$NAABU_CURRENT_FILE"
+        fi
         if [ "$NAABU_EXIT_CODE" -eq 0 ]; then
             mv -f "$NAABU_CURRENT_FILE" "$NAABU_OUTPUT_FILE"
             NAABU_PUBLISHED="true"
@@ -2807,11 +3072,18 @@ if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
     log_warn "Skipping broad nmap scan for exact URL/explicit-port target"
     NMAP_STATUS="skipped"
     NMAP_NOTE="exact URL/explicit port target; broad scan skipped"
+elif [ "$PORT_BATCH" -eq 1 ] && [ "$NAABU_STATUS" = "ok" ]; then
+    NMAP_NOTE="naabu completed this port batch"
 elif command -v nmap &>/dev/null; then
     NMAP_CURRENT_DIR="$(mktemp -d "$RECON_DIR/ports/.nmap.XXXXXX")"
     NMAP_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 180 || echo 600)
     NMAP_RAN="false"
-    if [ "$TARGET_KIND" = "domain" ]; then
+    if [ "$PORT_BATCH" -eq 1 ]; then
+        if [ -s "$RECON_DIR/ports/scan_targets.txt" ]; then
+            NMAP_TARGET_ARGS=(-iL "$RECON_DIR/ports/scan_targets.txt")
+            NMAP_RAN="true"
+        fi
+    elif [ "$TARGET_KIND" = "domain" ]; then
         log_step "Running nmap (top 1000 ports) on $TARGET..."
         NMAP_TARGET_ARGS=("$TARGET")
         NMAP_RAN="true"
@@ -2835,10 +3107,13 @@ elif command -v nmap &>/dev/null; then
         set -e
         NMAP_HAS_CURRENT="false"
         NMAP_GREPPABLE_CURRENT="false"
+        NMAP_XML_CURRENT="false"
         find "$NMAP_CURRENT_DIR" -type f -size +0c -print -quit 2>/dev/null | grep -q . && NMAP_HAS_CURRENT="true"
         [ ! -f "$NMAP_CURRENT_DIR/nmap_greppable.txt" ] || NMAP_GREPPABLE_CURRENT="true"
+        [ ! -f "$NMAP_CURRENT_DIR/nmap_results.xml" ] || NMAP_XML_CURRENT="true"
         if [ "$NMAP_EXIT_CODE" -eq 0 ] || [ "$NMAP_HAS_CURRENT" = "true" ]; then
             for name in nmap_results.txt nmap_greppable.txt nmap_results.xml; do
+                archive_collector_artifact "$RECON_DIR/ports/$name"
                 if [ -f "$NMAP_CURRENT_DIR/$name" ]; then
                     mv -f "$NMAP_CURRENT_DIR/$name" "$RECON_DIR/ports/$name"
                 elif [ "$NMAP_EXIT_CODE" -eq 0 ]; then
@@ -2862,30 +3137,53 @@ elif command -v nmap &>/dev/null; then
     fi
 
     if [ "${NMAP_PUBLISHED:-false}" = "true" ] && [ "${NMAP_GREPPABLE_CURRENT:-false}" = "true" ] && [ -f "$RECON_DIR/ports/nmap_greppable.txt" ]; then
-        python3 - "$RECON_DIR/ports/nmap_greppable.txt" "$RECON_DIR/ports/open_host_ports_nmap.txt" <<'PY'
+        python3 - "$RECON_DIR/ports/nmap_greppable.txt" "$RECON_DIR/ports/open_host_ports_nmap.txt" "$PORT_BATCH" "$RECON_DIR/ports/scan_targets.txt" "$DISCOVERY_HOSTS_FILE" "$TARGET" "$NMAP_XML_CURRENT" "$NMAP_EXIT_CODE" <<'PY'
 import ipaddress
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-source, output = map(Path, sys.argv[1:])
+source, output = map(Path, sys.argv[1:3])
+selected = Path(sys.argv[4] if sys.argv[3] == "1" else sys.argv[5])
+inputs = set(selected.read_text(encoding="utf-8").splitlines()) if selected.is_file() else set()
+inputs.add(sys.argv[6])
+bindings = {}
+scanned = set()
+if sys.argv[7] == "true":
+    try:
+        for item in ET.parse(source.with_name("nmap_results.xml")).findall("host"):
+            names = {host.get("name", "").lower() for host in item.findall("hostnames/hostname")} & inputs
+            for address in item.findall("address"):
+                bindings.setdefault(address.get("addr", ""), set()).update(names)
+                addr = address.get("addr", "")
+                names.add(f"[{addr}]" if ":" in addr else addr)
+            if item.find("ports") is not None:
+                scanned.update(names & inputs)
+    except ET.ParseError:
+        print("Incomplete nmap XML; only explicit greppable hostname bindings retained", file=sys.stderr)
 rows = set()
 for raw in source.read_text(encoding="utf-8", errors="replace").splitlines():
-    match = re.match(r"Host:\s+(\S+).*?Ports:\s+(.+)", raw)
+    match = re.match(r"Host:\s+(\S+)\s+\(([^)]*)\).*?Ports:\s+(.+)", raw)
     if not match:
         continue
-    host, ports = match.groups()
+    host, hostname, ports = match.groups()
+    hosts = bindings.get(host, set()) | ({hostname.lower()} if hostname.lower() in inputs else set())
     try:
         ipaddress.IPv6Address(host)
     except ValueError:
         pass
     else:
         host = f"[{host}]"
+    hosts.add(host)
     for entry in ports.split(","):
         port = re.match(r"\s*(\d+)/open/", entry)
         if port:
-            rows.add(f"{host}:{port.group(1)}")
+            rows.update(f"{value}:{port.group(1)}" for value in hosts)
 Path(output).write_text(("\n".join(sorted(rows)) + "\n") if rows else "", encoding="utf-8")
+if sys.argv[3] == "1" and sys.argv[8] == "0":
+    with source.with_name("scan_results.tsv").open("a", encoding="utf-8") as handle:
+        handle.writelines(host + "\tok\n" for host in sorted(scanned))
 PY
         sed -nE 's|.*:([0-9]+)$|\1/open|p' "$RECON_DIR/ports/open_host_ports_nmap.txt" \
             | sort -u > "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || true
@@ -2916,12 +3214,27 @@ if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
 else
     PORT_PHASE_STATUS="$(aggregate_optional_status "$NAABU_STATUS" "$NMAP_STATUS")"
 fi
+if [ "$PORT_BATCH" -eq 1 ]; then
+    if [ "$NAABU_STATUS" = "ok" ] || [ "$NMAP_STATUS" = "ok" ]; then
+        PORT_PHASE_STATUS="ok"
+    fi
+    awk -F '\t' 'FILENAME == ARGV[1] {if ($2 == "ok") done[$1] = 1; next} NF {print $0 "\t" ($0 in done ? "ok" : "partial")}' \
+        "$RECON_DIR/ports/scan_results.tsv" "$RECON_DIR/ports/scan_targets.txt" > "$RECON_DIR/ports/scan_results.tsv.tmp"
+    mv -f "$RECON_DIR/ports/scan_results.tsv.tmp" "$RECON_DIR/ports/scan_results.tsv"
+    record_collection_batch ports/scan "$RECON_DIR/ports/scan_results.tsv"
+    PORT_ACCOUNTING="$(collection_accounting ports/scan)"
+    if [ ! -s "$RECON_DIR/ports/scan_targets.txt" ]; then
+        PORT_PHASE_STATUS="ok"
+    fi
+else
+    PORT_ACCOUNTING="input_total=$NAABU_INPUT_TOTAL; selected=$NAABU_SELECTED; remaining=$((NAABU_INPUT_TOTAL - NAABU_SELECTED))"
+fi
 record_recon_phase \
     port_scan \
     "$PORT_PHASE_STATUS" \
     "recon/${RECON_TARGET_KEY}/ports/open_host_ports.txt" \
     "$PORTS_OPEN" \
-    "naabu=${NAABU_STATUS} (${NAABU_NOTE}); nmap=${NMAP_STATUS} (${NMAP_NOTE}); host-aware canonical evidence with open_ports_all.txt compatibility projection; input_total=$NAABU_INPUT_TOTAL; selected=$NAABU_SELECTED; remaining=$((NAABU_INPUT_TOTAL - NAABU_SELECTED)); continuation=next port sample; closure_blocking=false"
+    "naabu=${NAABU_STATUS} (${NAABU_NOTE}); nmap=${NMAP_STATUS} (${NMAP_NOTE}); unobserved inputs remain pending; host-aware canonical evidence with open_ports_all.txt compatibility projection; $PORT_ACCOUNTING; continuation=next port sample; closure_blocking=false"
 emit_claude_hint \
     phase                port_scan \
     open_ports_total     "$PORTS_OPEN" \
@@ -2931,12 +3244,12 @@ fi
 # ============================================================
 # Phase 4: URL Collection
 # ============================================================
-if [ "$RECON_COLLECT" != "ffuf" ]; then
+if collects history || collects katana || [ "$RECON_COLLECT" = "discover" ]; then
 recon_budget_checkpoint url_collection
 echo ""
 log_info "Phase 4: URL Collection"
 
-if [ -z "$RECON_COLLECT" ]; then
+if collects history; then
 start_collector gau "$RECON_DIR/urls/gau.txt" \
     "recon/${RECON_TARGET_KEY}/urls/gau.txt" collect_gau_urls
 start_collector wayback_urls "$RECON_DIR/urls/wayback.txt" \
@@ -2944,8 +3257,10 @@ start_collector wayback_urls "$RECON_DIR/urls/wayback.txt" \
 start_collector waymore "$RECON_DIR/urls/waymore.txt" \
     "recon/${RECON_TARGET_KEY}/urls/waymore.txt" collect_waymore_urls
 wait_collector_group
+record_recon_phase url_history ok "recon/${RECON_TARGET_KEY}/urls/" 0 "historical collectors; per-source failures remain visible"
 fi
 
+if collects katana; then
 KATANA_SEED_LIMIT=50
 [ "$RECON_PROFILE" != "deep" ] || KATANA_SEED_LIMIT=5
 select_collection_batch urls/katana "$RECON_DIR/live/urls.txt" "$KATANA_SEED_LIMIT" "katana-d3-jc-kf-all-v1"
@@ -2960,6 +3275,7 @@ if [ "$(cut -f1 "$RECON_DIR/logs/collectors/katana.status")" != "ok" ] || \
 fi
 record_collection_batch urls/katana "$RECON_DIR/urls/katana_results.tsv"
 KATANA_ACCOUNTING="$(collection_accounting urls/katana)"
+fi
 
 # Merge only primary collector outputs into a run-scoped raw staging file.
 # Derived Active files from previous runs must never feed back into this corpus.
@@ -2981,15 +3297,17 @@ URLS_API=0
 URLS_SENS=0
 URL_COLLECTION_STATUS="ok"
 [ "$RAW_URLS_TOTAL" -eq 0 ] && URL_COLLECTION_STATUS="partial"
-if grep -q $'\tpartial$' "$RECON_DIR/urls/katana_results.tsv"; then
+if collects katana && grep -q $'\tpartial$' "$RECON_DIR/urls/katana_results.tsv"; then
     URL_COLLECTION_STATUS="partial"
 fi
+if collects katana; then
 record_recon_phase \
     url_collection \
     "$URL_COLLECTION_STATUS" \
     "recon/${RECON_TARGET_KEY}/urls/raw/all.txt" \
     "$RAW_URLS_TOTAL" \
     "raw URL staging is retained until Active publication; Active all.txt is published after filtering; $KATANA_ACCOUNTING; continuation=next Katana target sample; closure_blocking=false"
+fi
 
 # ============================================================
 # Phase 4.5: URL Denoising (non-destructive)
@@ -3083,13 +3401,16 @@ fi
 # ============================================================
 # Phase 5: JS Analysis
 # ============================================================
-if [ -z "$RECON_COLLECT" ]; then
+if collects js; then
 recon_budget_checkpoint js_analysis
 echo ""
 log_info "Phase 5: JavaScript Analysis"
 
 JS_FILES_FOR_ANALYSIS="$RECON_DIR/urls/js_files_analysis.txt"
 JS_REQUEST_TARGETS="$RECON_DIR/js/request_targets.txt"
+if [ -n "$RECON_INPUT" ]; then
+    publish_artifact_union "$RECON_INPUT" "$RECON_DIR/urls/js_files.txt"
+fi
 build_filtered_first_backstop \
     "$RECON_DIR/urls/js_files_filtered.txt" \
     "$RECON_DIR/urls/js_files.txt" \
@@ -3099,8 +3420,9 @@ JS_ANALYSIS_STATUS="skipped"
 JS_CANDIDATE_BUILD_STATUS="skipped"
 JS_DEEP_CANDIDATES=0
 JS_LINK_ANALYZER="none"
+JS_ACCOUNTING=""
 
-if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
+if [ -s "$JS_REQUEST_TARGETS" ]; then
     mkdir -p "$RECON_DIR/js"
     if python3 "$BASE_DIR/tools/recon_candidates.py" \
         --js-input "$JS_FILES_FOR_ANALYSIS" \
@@ -3126,11 +3448,15 @@ if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
         JS_ANALYSIS_STATUS="ok"
         LINKFINDER_MAX_JS=$([ "$QUICK_MODE" = "--quick" ] && echo 10 || echo 25)
         XNLINKFINDER_BIN="$(resolve_xnlinkfinder_path || true)"
-        XNLINKFINDER_TARGETS="$RECON_DIR/js/xnlinkfinder_targets.txt"
+        LINKFINDER_BIN="$(resolve_linkfinder_path || true)"
+        XNLINKFINDER_TARGETS="$RECON_DIR/js/links_targets.txt"
         XNLINKFINDER_SCOPE="$RECON_DIR/js/xnlinkfinder_scope.txt"
-        : > "$RECON_DIR/js/linkfinder_raw.txt"
-        head -"$LINKFINDER_MAX_JS" "$JS_REQUEST_TARGETS" > "$XNLINKFINDER_TARGETS"
-        if ! python3 - "$BASE_DIR" "$TARGET" "$XNLINKFINDER_TARGETS" "$RECON_DIR/subdomains/all.txt" "$XNLINKFINDER_SCOPE" <<'PY'
+        mkdir -p "$RECON_DIR/js/runs"
+        JS_RUN_DIR="$(mktemp -d "$RECON_DIR/js/runs/run.XXXXXX")"
+        for name in endpoints_raw.txt linkfinder_raw.txt endpoint_sources.jsonl potential_secrets.txt extract_results.tsv links_results.tsv xn_results.tsv http_results.tsv; do
+            : > "$JS_RUN_DIR/$name"
+        done
+        if ! python3 - "$BASE_DIR" "$TARGET" "$JS_REQUEST_TARGETS" "$RECON_DIR/subdomains/all.txt" "$XNLINKFINDER_SCOPE" <<'PY'
 from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlparse
@@ -3196,54 +3522,87 @@ PY
         fi
 
         if [ "$RECON_PROFILE" != "quick" ] && [ -n "$XNLINKFINDER_BIN" ] && [ -s "$XNLINKFINDER_SCOPE" ] && ! bb_auth_active; then
-            log_step "Running xnLinkFinder depth 1 on top $LINKFINDER_MAX_JS JS files..."
+            JS_LINK_ANALYZER="xnLinkFinder"
+        elif [ -n "$LINKFINDER_BIN" ]; then
+            JS_LINK_ANALYZER="LinkFinder"
+        else
+            JS_LINK_ANALYZER="unavailable"
+        fi
+        select_collection_batch js/extract "$JS_REQUEST_TARGETS" 50 "js-extract:v1:auth=${BB_AUTH_SESSION_ID:-anonymous}"
+        select_collection_batch js/links "$JS_REQUEST_TARGETS" "$LINKFINDER_MAX_JS" \
+            "js-links:v1:${JS_LINK_ANALYZER}:${XNLINKFINDER_BIN}:${LINKFINDER_BIN}:auth=${BB_AUTH_SESSION_ID:-anonymous}"
+        cp "$RECON_DIR/js/extract_targets.txt" "$JS_RUN_DIR/extract_targets.txt"
+        cp "$XNLINKFINDER_TARGETS" "$JS_RUN_DIR/links_targets.txt"
+        if [ "$JS_LINK_ANALYZER" = "xnLinkFinder" ] && [ -s "$XNLINKFINDER_TARGETS" ]; then
+            log_step "Running xnLinkFinder depth 1 on the selected JS batch..."
             if run_xnlinkfinder \
                 "$XNLINKFINDER_BIN" \
                 "$XNLINKFINDER_TARGETS" \
                 "$XNLINKFINDER_SCOPE" \
-                "$RECON_DIR/js/linkfinder_raw.txt" \
-                "$TARGET"; then
-                JS_LINK_ANALYZER="xnLinkFinder"
+                "$JS_RUN_DIR/linkfinder_raw.txt" \
+                "$TARGET" "$JS_RUN_DIR/xn_results.tsv"; then
+                :
             else
                 JS_ANALYSIS_STATUS="partial"
-                log_warn "xnLinkFinder failed — falling back to legacy LinkFinder"
+                log_warn "xnLinkFinder incomplete; legacy LinkFinder may recover unconfirmed inputs"
             fi
-        elif bb_auth_active; then
-            log_info "Authenticated JS keeps per-URL header isolation via legacy LinkFinder"
         fi
 
-        LINKFINDER_BIN=""
-        if [ "$JS_LINK_ANALYZER" = "none" ]; then
-            LINKFINDER_BIN="$(resolve_linkfinder_path || true)"
-            if [ -n "$LINKFINDER_BIN" ]; then
-                JS_LINK_ANALYZER="LinkFinder"
-                log_step "Reusing downloaded JS in legacy LinkFinder (top $LINKFINDER_MAX_JS)..."
+        declare -A JS_EXTRACT_SELECTED=() JS_LINK_SELECTED=() JS_XN_DONE=()
+        while IFS= read -r js_url; do
+            [ -z "$js_url" ] || JS_EXTRACT_SELECTED["$js_url"]=1
+        done < "$JS_RUN_DIR/extract_targets.txt"
+        while IFS=$'\t' read -r js_url js_status; do
+            if [ -n "$js_url" ] && [ "$js_status" = "ok" ]; then JS_XN_DONE["$js_url"]=1; fi
+        done < "$JS_RUN_DIR/xn_results.tsv"
+        : > "$JS_RUN_DIR/legacy_targets.txt"
+        while IFS= read -r js_url; do
+            [ -n "$js_url" ] || continue
+            if [ -n "${JS_XN_DONE[$js_url]:-}" ]; then
+                printf '%s\tok\n' "$js_url" >> "$JS_RUN_DIR/links_results.tsv"
+            elif [ -n "$LINKFINDER_BIN" ]; then
+                JS_LINK_SELECTED["$js_url"]=1
+                printf '%s\n' "$js_url" >> "$JS_RUN_DIR/legacy_targets.txt"
             else
-                JS_LINK_ANALYZER="unavailable"
-                log_warn "xnLinkFinder/LinkFinder unavailable — skipping recursive JS endpoint extraction"
+                JS_ANALYSIS_STATUS="partial"
+                printf '%s\tpartial\n' "$js_url" >> "$JS_RUN_DIR/links_results.tsv"
             fi
-        fi
-
-        log_step "Extracting endpoints from JS files (top 50)..."
-
-        JS_RESPONSE_TMP="$(mktemp "${TMPDIR:-/tmp}/bbhunt-js.XXXXXX.js")" || exit 2
-        : > "$RECON_DIR/js/endpoints_raw.txt"
+        done < "$JS_RUN_DIR/links_targets.txt"
+        cat "$JS_RUN_DIR/extract_targets.txt" "$JS_RUN_DIR/legacy_targets.txt" | awk 'NF && !seen[$0]++' > "$JS_RUN_DIR/download_targets.txt"
+        mkdir -p "$RECON_DIR/js/responses"
+        chmod 700 "$JS_RUN_DIR" "$RECON_DIR/js/responses"
+        log_step "Extracting selected JS; reuse successful cached responses for remaining link analysis"
         JS_RESPONSE_INDEX=0
         while IFS= read -r js_url; do
             JS_RESPONSE_INDEX=$((JS_RESPONSE_INDEX + 1))
             [ -n "$js_url" ] || continue
-            bb_auth_args_for_url "$js_url"
-            : > "$JS_RESPONSE_TMP"
-            JS_DOWNLOAD_TIMEOUT=10
-            if [ -n "$LINKFINDER_BIN" ] && [ "$JS_RESPONSE_INDEX" -le "$LINKFINDER_MAX_JS" ]; then
-                JS_DOWNLOAD_TIMEOUT=15
+            JS_RESPONSE_CACHE="$RECON_DIR/js/responses/$(printf '%s\n' "${BB_AUTH_SESSION_ID:-anonymous}" "$js_url" | sha256sum | cut -d ' ' -f 1).js"
+            if [ -n "${JS_EXTRACT_SELECTED[$js_url]:-}" ] || [ ! -f "$JS_RESPONSE_CACHE" ]; then
+                bb_auth_args_for_url "$js_url"
+                JS_RESPONSE_TMP="$(mktemp "${TMPDIR:-/tmp}/bbhunt-js.XXXXXX.js")"
+                JS_DOWNLOAD_TIMEOUT=10
+                [ -z "${JS_LINK_SELECTED[$js_url]:-}" ] || JS_DOWNLOAD_TIMEOUT=15
+                JS_DOWNLOAD_EXIT=0
+                JS_HTTP_CODE=$(curl -q -s "${BB_URL_AUTH_ARGS[@]}" --max-time "$JS_DOWNLOAD_TIMEOUT" \
+                    -D "$JS_RUN_DIR/response-${JS_RESPONSE_INDEX}.headers" -w '%{http_code}' \
+                    "$js_url" -o "$JS_RESPONSE_TMP" 2>> "$JS_RUN_DIR/download_errors.log") || JS_DOWNLOAD_EXIT=$?
+                cp "$JS_RESPONSE_TMP" "$JS_RUN_DIR/response-${JS_RESPONSE_INDEX}.js"
+                printf '%s\t%s\t%s\tresponse-%s.js\n' "$js_url" "$JS_HTTP_CODE" "$JS_DOWNLOAD_EXIT" "$JS_RESPONSE_INDEX" >> "$JS_RUN_DIR/http_results.tsv"
+                if [ "$JS_DOWNLOAD_EXIT" -ne 0 ] || [[ ! "$JS_HTTP_CODE" =~ ^2[0-9][0-9]$ ]]; then
+                    JS_ANALYSIS_STATUS="partial"
+                    [ -z "${JS_EXTRACT_SELECTED[$js_url]:-}" ] || printf '%s\tpartial\n' "$js_url" >> "$JS_RUN_DIR/extract_results.tsv"
+                    [ -z "${JS_LINK_SELECTED[$js_url]:-}" ] || printf '%s\tpartial\n' "$js_url" >> "$JS_RUN_DIR/links_results.tsv"
+                    rm -f "$JS_RESPONSE_TMP"; JS_RESPONSE_TMP=""
+                    continue
+                fi
+                mv -f "$JS_RESPONSE_TMP" "$JS_RESPONSE_CACHE"
+                JS_RESPONSE_TMP=""
+            else
+                printf '%s\tcached\t%s\n' "$js_url" "$JS_RESPONSE_CACHE" >> "$JS_RUN_DIR/http_results.tsv"
             fi
-            if ! curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time "$JS_DOWNLOAD_TIMEOUT" "$js_url" -o "$JS_RESPONSE_TMP" 2>/dev/null; then
-                JS_ANALYSIS_STATUS="partial"
-                log_warn "JS download failed; skipping incomplete response"
-                continue
-            fi
-            if ! python3 - "$js_url" "$JS_RESPONSE_TMP" "$RECON_DIR/js/endpoints_raw.txt" "$RECON_DIR/js/endpoint_sources.jsonl" <<'PY_JS_ENDPOINTS'
+            if [ -n "${JS_EXTRACT_SELECTED[$js_url]:-}" ]; then
+                JS_EXTRACT_STATUS="ok"
+                if ! python3 - "$js_url" "$JS_RESPONSE_CACHE" "$JS_RUN_DIR/endpoints_raw.txt" "$JS_RUN_DIR/endpoint_sources.jsonl" <<'PY_JS_ENDPOINTS'
 import json
 import re
 import sys
@@ -3259,33 +3618,54 @@ with open(endpoints_path, "a", encoding="utf-8") as endpoints, open(sources_path
         endpoints.write(resolved + "\n")
         sources.write(json.dumps({"source_url": source_url, "endpoint": endpoint, "url": "", "binding": "unbound", "requires": "document_base_url"}) + "\n")
 PY_JS_ENDPOINTS
-            then
-                JS_ANALYSIS_STATUS="partial"
-                log_warn "JS endpoint extraction failed; captured sources remain available"
-            fi
-            grep -Eio "([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)[\"'[:space:]]*[:=][\"'[:space:]]*[\"' ]?([A-Za-z0-9_./+=:-]{8,})" \
-                "$JS_RESPONSE_TMP" >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
-            if [ -n "$LINKFINDER_BIN" ] && [ "$JS_RESPONSE_INDEX" -le "$LINKFINDER_MAX_JS" ]; then
-                if ! run_legacy_linkfinder "$LINKFINDER_BIN" "$JS_RESPONSE_TMP" "$RECON_DIR/js/linkfinder_raw.txt"; then
-                    JS_ANALYSIS_STATUS="partial"
-                    log_warn "LinkFinder failed on a captured JS response"
+                then
+                    JS_EXTRACT_STATUS="partial"
+                    log_warn "JS endpoint extraction failed; captured sources remain available"
                 fi
+                JS_GREP_EXIT=0
+                grep -Eio "([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)[\"'[:space:]]*[:=][\"'[:space:]]*[\"' ]?([A-Za-z0-9_./+=:-]{8,})" \
+                    "$JS_RESPONSE_CACHE" >> "$JS_RUN_DIR/potential_secrets.txt" 2>> "$JS_RUN_DIR/extract_errors.log" || JS_GREP_EXIT=$?
+                [ "$JS_GREP_EXIT" -le 1 ] || JS_EXTRACT_STATUS="partial"
+                [ "$JS_EXTRACT_STATUS" = "ok" ] || JS_ANALYSIS_STATUS="partial"
+                printf '%s\t%s\n' "$js_url" "$JS_EXTRACT_STATUS" >> "$JS_RUN_DIR/extract_results.tsv"
             fi
-        done < <(head -50 "$JS_REQUEST_TARGETS")
-        rm -f "$JS_RESPONSE_TMP"
-        JS_RESPONSE_TMP=""
-
-        if [ -f "$RECON_DIR/js/endpoints_raw.txt" ]; then
-            sort -u "$RECON_DIR/js/endpoints_raw.txt" > "$RECON_DIR/js/endpoints.txt"
-            log_done "JS endpoints: $(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null || echo 0)"
-
-            if [ -s "$RECON_DIR/js/potential_secrets.txt" ]; then
-                sort -u "$RECON_DIR/js/potential_secrets.txt" -o "$RECON_DIR/js/potential_secrets.txt"
-                log_warn "Potential secrets found in JS: $(wc -l < "$RECON_DIR/js/potential_secrets.txt")"
+            if [ -n "${JS_LINK_SELECTED[$js_url]:-}" ]; then
+                JS_LINK_STATUS="ok"
+                if ! run_legacy_linkfinder "$LINKFINDER_BIN" "$JS_RESPONSE_CACHE" "$JS_RUN_DIR/linkfinder_raw.txt"; then
+                    JS_LINK_STATUS="partial"; JS_ANALYSIS_STATUS="partial"
+                fi
+                printf '%s\t%s\n' "$js_url" "$JS_LINK_STATUS" >> "$JS_RUN_DIR/links_results.tsv"
             fi
-        fi
+        done < "$JS_RUN_DIR/download_targets.txt"
 
-        sed '/^[[:space:]]*$/d' "$RECON_DIR/js/linkfinder_raw.txt" | sort -u > "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || true
+        for name in endpoints_raw.txt linkfinder_raw.txt endpoint_sources.jsonl potential_secrets.txt; do
+            publish_artifact_union "$JS_RUN_DIR/$name" "$RECON_DIR/js/$name"
+        done
+        publish_artifact_union "$RECON_DIR/js/endpoints_raw.txt" "$RECON_DIR/js/endpoints.txt"
+        publish_artifact_union "$RECON_DIR/js/linkfinder_raw.txt" "$RECON_DIR/js/linkfinder_endpoints.txt"
+        record_collection_batch js/extract "$JS_RUN_DIR/extract_results.tsv"
+        record_collection_batch js/links "$JS_RUN_DIR/links_results.tsv"
+        JS_ACCOUNTING=$(python3 - "$BASE_DIR" "$RECON_DIR" "$TARGET" <<'PY_JS_ACCOUNTING'
+import json
+import sys
+from pathlib import Path
+base, recon, target = sys.argv[1:]
+sys.path.insert(0, base)
+from tools.recon_target_selector import collection_accounting
+directory = Path(recon) / "js"
+completed = []
+selected = set()
+for name in ("extract", "links"):
+    state, plan = directory / f"{name}_state.json", directory / f"{name}_plan.json"
+    collection_accounting(target=target, state_path=state, plan_path=plan, repo_root=base)
+    completed.append(set(json.loads(state.read_text())["completed"]))
+    selected.update(item["url"] for item in json.loads(plan.read_text())["selected"])
+total = len((directory / "request_targets.txt").read_text().splitlines())
+done = len(completed[0] & completed[1])
+print(f"input_total={total}; selected={done}; remaining={total-done}; batch_selected={len(selected)}; selected_means=collected_successfully; builtin_completed={len(completed[0])}; link_completed={len(completed[1])}")
+PY_JS_ACCOUNTING
+)
+        log_done "JS endpoints: $(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null || echo 0)"
         log_done "$JS_LINK_ANALYZER endpoints: $(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || echo 0)"
         [ "$JS_CANDIDATE_BUILD_STATUS" = "ok" ] || JS_ANALYSIS_STATUS="partial"
     fi
@@ -3299,17 +3679,15 @@ JS_LINKFINDER=$(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null | t
 JS_MANIFEST_COUNT="$JS_ENDPOINTS"
 js_profile_defers_active_analysis && JS_MANIFEST_COUNT="$JS_DEEP_CANDIDATES"
 JS_INPUT_TOTAL=$(wc -l < "$JS_REQUEST_TARGETS" 2>/dev/null | tr -d ' ' || echo 0)
-JS_SELECTED="$JS_MANIFEST_COUNT"
-if ! js_profile_defers_active_analysis; then
-    JS_SELECTED=$(head -50 "$JS_REQUEST_TARGETS" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+if [ -z "$JS_ACCOUNTING" ]; then
+    JS_ACCOUNTING="input_total=$JS_INPUT_TOTAL; selected=0; remaining=$JS_INPUT_TOTAL; selected_means=collected_successfully"
 fi
-JS_REMAINING=$((JS_INPUT_TOTAL > JS_SELECTED ? JS_INPUT_TOTAL - JS_SELECTED : 0))
 record_recon_phase \
     js_analysis \
     "$JS_ANALYSIS_STATUS" \
     "recon/${RECON_TARGET_KEY}/js/$(js_profile_defers_active_analysis && echo deep_candidates.txt || echo endpoints.txt)" \
     "$JS_MANIFEST_COUNT" \
-    "all JS URLs remain in urls/js_files.txt; active request inputs are target-owned in js/request_targets.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}; limit=${JS_CANDIDATE_LIMIT}; quick/normal defer active analysis without closing coverage; input_total=$JS_INPUT_TOTAL; selected=$JS_SELECTED; remaining=$JS_REMAINING; continuation=native Read/Grep of cached JS when selected; closure_blocking=false"
+    "all JS URLs remain in urls/js_files.txt; active request inputs are target-owned in js/request_targets.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}; limit=${JS_CANDIDATE_LIMIT}; quick/normal defer active analysis without closing coverage; $JS_ACCOUNTING; continuation=deep --collect js or native Read/Grep of cached JS; closure_blocking=false"
 emit_claude_hint \
     phase                  js_analysis \
     profile                "$RECON_PROFILE" \
@@ -3324,7 +3702,7 @@ fi
 # ============================================================
 # Phase 6: Directory Fuzzing
 # ============================================================
-if [ "$RECON_COLLECT" != "katana" ]; then
+if collects ffuf; then
 recon_budget_checkpoint dir_fuzz
 echo ""
 log_info "Phase 6: Directory Fuzzing"
@@ -3533,6 +3911,8 @@ run_ffuf_phase() {
         fi
         archive_collector_artifact "$FFUF_TARGET_STATE" || return 1
         archive_collector_artifact "$FFUF_TARGET_PLAN" || return 1
+        local preference=()
+        [ -z "${RECON_INPUT:-}" ] || preference=(--prefer "$RECON_INPUT")
         if python3 "$BASE_DIR/tools/recon_target_selector.py" \
             --select \
             --target "$TARGET" \
@@ -3543,7 +3923,7 @@ run_ffuf_phase() {
             --targets "$FFUF_TARGETS_FILE" \
             --wordlist "$wordlist" \
             --limit "$max_fuzz" \
-            "${paging_args[@]}" \
+            "${paging_args[@]}" "${preference[@]}" \
             >> "$FFUF_LOG" 2>&1; then
             target_selection="ok"
             if target_pending="$(python3 - "$FFUF_TARGET_PLAN" <<'PY'
@@ -3827,7 +4207,7 @@ fi
 # ============================================================
 # Phase 6.5: Config File Exposure Check
 # ============================================================
-if [ -z "$RECON_COLLECT" ]; then
+if collects config; then
 recon_budget_checkpoint config_exposure
 echo ""
 log_info "Phase 6.5: Config File Exposure Check"
@@ -3935,14 +4315,16 @@ emit_claude_hint \
 # ============================================================
 # Phase 6.6: Exposure Candidate Correlation
 # ============================================================
+fi
 recon_budget_checkpoint exposure_candidates
 echo ""
 log_info "Phase 6.6: Exposure Candidate Correlation"
 
-API_DOC_CANDIDATES="$RECON_DIR/exposure/api_doc_candidates.txt"
-CLOUD_STORAGE_CANDIDATES="$RECON_DIR/exposure/cloud_storage_candidates.txt"
-S3_BUCKET_CANDIDATES="$RECON_DIR/exposure/s3_bucket_candidates.txt"
-EXTERNAL_SERVICE_HOSTS="$RECON_DIR/exposure/external_service_hosts.txt"
+EXPOSURE_CURRENT_DIR="$(mktemp -d "$RECON_DIR/exposure/.correlation.XXXXXX")"
+API_DOC_CANDIDATES="$EXPOSURE_CURRENT_DIR/api_doc_candidates.txt"
+CLOUD_STORAGE_CANDIDATES="$EXPOSURE_CURRENT_DIR/cloud_storage_candidates.txt"
+S3_BUCKET_CANDIDATES="$EXPOSURE_CURRENT_DIR/s3_bucket_candidates.txt"
+EXTERNAL_SERVICE_HOSTS="$EXPOSURE_CURRENT_DIR/external_service_hosts.txt"
 
 : > "$API_DOC_CANDIDATES"
 : > "$CLOUD_STORAGE_CANDIDATES"
@@ -3972,7 +4354,9 @@ collect_exposure_candidates() {
         | sed "s|^|[$label] |" >> "$EXTERNAL_SERVICE_HOSTS" || true
 }
 
-collect_exposure_candidates "$RAW_URLS_STAGING" "urls-raw"
+collect_exposure_candidates "$RECON_DIR/urls/all.txt" "urls"
+{ append_artifact "$RAW_URLS_ARCHIVE" && append_artifact "$RAW_URLS_STAGING"; } > "$EXPOSURE_CURRENT_DIR/raw_urls.txt"
+collect_exposure_candidates "$EXPOSURE_CURRENT_DIR/raw_urls.txt" "urls-raw"
 collect_exposure_candidates "$RECON_DIR/js/endpoints.txt" "js"
 collect_exposure_candidates "$RECON_DIR/js/linkfinder_endpoints.txt" "linkfinder"
 collect_exposure_candidates "$RECON_DIR/js/potential_secrets.txt" "js-secrets"
@@ -4017,6 +4401,14 @@ if src.exists():
 dst.write_text(("\n".join(out[:500]) + "\n") if out else "", encoding="utf-8")
 PY
 
+for name in api_doc_candidates.txt cloud_storage_candidates.txt s3_bucket_candidates.txt external_service_hosts.txt; do
+    publish_artifact_union "$EXPOSURE_CURRENT_DIR/$name" "$RECON_DIR/exposure/$name"
+done
+rm -r "$EXPOSURE_CURRENT_DIR"
+API_DOC_CANDIDATES="$RECON_DIR/exposure/api_doc_candidates.txt"
+CLOUD_STORAGE_CANDIDATES="$RECON_DIR/exposure/cloud_storage_candidates.txt"
+S3_BUCKET_CANDIDATES="$RECON_DIR/exposure/s3_bucket_candidates.txt"
+EXTERNAL_SERVICE_HOSTS="$RECON_DIR/exposure/external_service_hosts.txt"
 API_DOC_COUNT=$(wc -l < "$API_DOC_CANDIDATES" 2>/dev/null | tr -d ' ' || echo 0)
 CLOUD_CANDIDATE_COUNT=$(wc -l < "$CLOUD_STORAGE_CANDIDATES" 2>/dev/null | tr -d ' ' || echo 0)
 S3_BUCKET_COUNT=$(wc -l < "$S3_BUCKET_CANDIDATES" 2>/dev/null | tr -d ' ' || echo 0)
@@ -4047,6 +4439,7 @@ emit_claude_hint \
 # ============================================================
 # Phase 6.7: API Leak Detection
 # ============================================================
+if collects api; then
 recon_budget_checkpoint api_leak_detection
 echo ""
 log_info "Phase 6.7: API Leak Detection"
@@ -4054,11 +4447,13 @@ log_info "Phase 6.7: API Leak Detection"
 API_LEAK_DIR="$RECON_DIR/exposure/api_leaks"
 API_LEAK_CANDIDATES="$RECON_DIR/exposure/api_leak_candidates.txt"
 API_LEAK_TRUFFLEHOG="$RECON_DIR/exposure/api_leak_trufflehog_verified.jsonl"
-POSTMAN_LEAKS="$API_LEAK_DIR/postman_leaks.txt"
-POSTLEAKS_DIR="$API_LEAK_DIR/postleaksNg"
-POSTLEAKS_LOG="$API_LEAK_DIR/postleaksNg.log"
-POSTLEAKS_URLS="$API_LEAK_DIR/postleaks_urls.txt"
-SWAGGER_LEAKS="$API_LEAK_DIR/swagger_leaks.txt"
+mkdir -p "$API_LEAK_DIR/runs"
+API_LEAK_RUN_DIR="$(mktemp -d "$API_LEAK_DIR/runs/run.XXXXXX")"
+POSTMAN_LEAKS="$API_LEAK_RUN_DIR/postman_leaks.txt"
+POSTLEAKS_DIR="$API_LEAK_RUN_DIR/postleaksNg"
+POSTLEAKS_LOG="$API_LEAK_RUN_DIR/postleaksNg.log"
+POSTLEAKS_URLS="$API_LEAK_RUN_DIR/postleaks_urls.txt"
+SWAGGER_LEAKS="$API_LEAK_RUN_DIR/swagger_leaks.txt"
 API_LEAK_TARGET=""
 API_LEAK_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 120 || echo 240)
 PORCH_PIRATE_STATUS="missing"
@@ -4066,8 +4461,7 @@ POSTLEAKS_STATUS="missing"
 SWAGGERSPY_STATUS="missing"
 
 mkdir -p "$API_LEAK_DIR" "$POSTLEAKS_DIR"
-: > "$API_LEAK_CANDIDATES"
-: > "$API_LEAK_TRUFFLEHOG"
+touch "$API_LEAK_CANDIDATES" "$API_LEAK_TRUFFLEHOG"
 : > "$POSTMAN_LEAKS"
 : > "$POSTLEAKS_LOG"
 : > "$POSTLEAKS_URLS"
@@ -4086,7 +4480,7 @@ if [ -n "$API_LEAK_TARGET" ]; then
         PORCH_PIRATE_EXIT=$?
         if [ "$PORCH_PIRATE_EXIT" -ne 0 ]; then
             run_with_timeout "$API_LEAK_TIMEOUT" porch-pirate -s "$API_LEAK_TARGET" -l 25 \
-                > "$POSTMAN_LEAKS" 2>/dev/null
+                >> "$POSTMAN_LEAKS" 2>/dev/null
             PORCH_PIRATE_EXIT=$?
         fi
         set -e
@@ -4141,6 +4535,12 @@ else
     log_warn "API leak search is domain-keyed — skipping for $TARGET_KIND target"
 fi
 
+for name in postman_leaks.txt postleaks_urls.txt swagger_leaks.txt; do
+    publish_artifact_union "$API_LEAK_RUN_DIR/$name" "$API_LEAK_DIR/$name"
+done
+POSTMAN_LEAKS="$API_LEAK_DIR/postman_leaks.txt"
+POSTLEAKS_URLS="$API_LEAK_DIR/postleaks_urls.txt"
+SWAGGER_LEAKS="$API_LEAK_DIR/swagger_leaks.txt"
 for f in "$POSTMAN_LEAKS" "$POSTLEAKS_URLS" "$SWAGGER_LEAKS" "$API_DOC_CANDIDATES"; do
     [ -s "$f" ] || continue
     grep -aEi '(https?://|postman|swagger|openapi|api-docs|swagger-ui|redoc|graphql|apikey|api[_-]?key|token|secret|authorization|bearer|client_secret)' "$f" \
@@ -4154,7 +4554,8 @@ if command -v trufflehog &>/dev/null && find "$API_LEAK_DIR" -type f -size +0c 2
         --json \
         --no-update \
         --only-verified \
-        > "$API_LEAK_TRUFFLEHOG" 2>/dev/null || true
+        > "$API_LEAK_RUN_DIR/trufflehog_verified.jsonl" 2>/dev/null || true
+    publish_artifact_union "$API_LEAK_RUN_DIR/trufflehog_verified.jsonl" "$API_LEAK_TRUFFLEHOG"
     log_done "verified API secrets: $(wc -l < "$API_LEAK_TRUFFLEHOG" 2>/dev/null || echo 0)"
 else
     log_warn "trufflehog not installed or API leak artifacts empty — skipping verified secret pass"
@@ -4238,6 +4639,8 @@ record_recon_phase \
 # ============================================================
 # Phase 6.7.6: OpenAPI Semantic Extraction
 # ============================================================
+fi
+if collects openapi; then
 recon_budget_checkpoint openapi_semantics
 echo ""
 log_info "Phase 6.7.6: OpenAPI Semantic Extraction"
@@ -4287,19 +4690,22 @@ emit_claude_hint \
 # ============================================================
 # Phase 6.8: Identity and Cloud Intel
 # ============================================================
+fi
+if collects identity; then
 recon_budget_checkpoint identity_cloud_intel
 echo ""
 log_info "Phase 6.8: Identity and Cloud Intel"
 
 IDENTITY_DIR="$RECON_DIR/exposure/identity_intel"
 CLOUD_INTEL_DIR="$RECON_DIR/exposure/cloud"
-EMAILS_OUT="$IDENTITY_DIR/emails.txt"
-LEAKSEARCH_OUT="$IDENTITY_DIR/leaksearch.txt"
 IDENTITY_SUMMARY="$IDENTITY_DIR/summary.md"
-CLOUD_ENUM_OUT="$CLOUD_INTEL_DIR/cloud_enum.txt"
+mkdir -p "$IDENTITY_DIR/runs" "$CLOUD_INTEL_DIR"
+IDENTITY_RUN_DIR="$(mktemp -d "$IDENTITY_DIR/runs/run.XXXXXX")"
+EMAILS_OUT="$IDENTITY_RUN_DIR/emails.txt"
+LEAKSEARCH_OUT="$IDENTITY_RUN_DIR/leaksearch.txt"
+CLOUD_ENUM_OUT="$IDENTITY_RUN_DIR/cloud_enum.txt"
 CLOUD_KEYWORD="$(printf '%s\n' "$TARGET" | sed -E 's|^https?://||; s|/.*$||; s|^\*\.||; s|:.*$||; s|\..*$||')"
 
-mkdir -p "$IDENTITY_DIR" "$CLOUD_INTEL_DIR"
 : > "$EMAILS_OUT"
 : > "$LEAKSEARCH_OUT"
 : > "$CLOUD_ENUM_OUT"
@@ -4330,7 +4736,7 @@ LEAKSEARCH_PY="$SHARED_TOOLS_DIR/LeakSearch/venv/bin/python3"
 [ -x "$LEAKSEARCH_PY" ] || LEAKSEARCH_PY="python3"
 if [ "$TARGET_KIND" = "domain" ] && [ -f "$LEAKSEARCH_SCRIPT" ]; then
     log_step "Running LeakSearch via Osmedeus toolsDir..."
-    if run_with_timeout 180 "$LEAKSEARCH_PY" "$LEAKSEARCH_SCRIPT" -k "$TARGET" -o "$LEAKSEARCH_OUT" > "$IDENTITY_DIR/leaksearch.log" 2>&1; then
+    if run_with_timeout 180 "$LEAKSEARCH_PY" "$LEAKSEARCH_SCRIPT" -k "$TARGET" -o "$LEAKSEARCH_OUT" > "$IDENTITY_RUN_DIR/leaksearch.log" 2>&1; then
         LEAKSEARCH_STATUS="ok"
     else
         LEAKSEARCH_STATUS="partial"
@@ -4354,7 +4760,7 @@ fi
 if [ "$TARGET_KIND" = "domain" ] && [ -n "$CLOUD_KEYWORD" ]; then
     if [ "${#CLOUD_ENUM_CMD[@]}" -gt 0 ]; then
         log_step "Running cloud_enum keyword sweep: $CLOUD_KEYWORD"
-        if run_with_timeout 180 "${CLOUD_ENUM_CMD[@]}" -k "$CLOUD_KEYWORD" -t 5 -qs -l "$CLOUD_ENUM_OUT" > "$CLOUD_INTEL_DIR/cloud_enum.log" 2>&1; then
+        if run_with_timeout 180 "${CLOUD_ENUM_CMD[@]}" -k "$CLOUD_KEYWORD" -t 5 -qs -l "$CLOUD_ENUM_OUT" > "$IDENTITY_RUN_DIR/cloud_enum.log" 2>&1; then
             CLOUD_ENUM_STATUS="ok"
         else
             CLOUD_ENUM_STATUS="partial"
@@ -4366,6 +4772,12 @@ else
     log_warn "cloud_enum skipped because target is not a domain or keyword is empty"
 fi
 
+publish_artifact_union "$EMAILS_OUT" "$IDENTITY_DIR/emails.txt"
+publish_artifact_union "$LEAKSEARCH_OUT" "$IDENTITY_DIR/leaksearch.txt"
+publish_artifact_union "$CLOUD_ENUM_OUT" "$CLOUD_INTEL_DIR/cloud_enum.txt"
+EMAILS_OUT="$IDENTITY_DIR/emails.txt"
+LEAKSEARCH_OUT="$IDENTITY_DIR/leaksearch.txt"
+CLOUD_ENUM_OUT="$CLOUD_INTEL_DIR/cloud_enum.txt"
 EMAIL_COUNT=$(wc -l < "$EMAILS_OUT" 2>/dev/null | tr -d ' ' || echo 0)
 LEAKSEARCH_COUNT=$(wc -l < "$LEAKSEARCH_OUT" 2>/dev/null | tr -d ' ' || echo 0)
 CLOUD_ENUM_COUNT=$(wc -l < "$CLOUD_ENUM_OUT" 2>/dev/null | tr -d ' ' || echo 0)
@@ -4417,7 +4829,7 @@ fi
 # ============================================================
 # Phase 7: Parameter Discovery
 # ============================================================
-if [ "$RECON_COLLECT" != "ffuf" ]; then
+if collects history || collects katana || [ "$RECON_COLLECT" = "discover" ]; then
 recon_budget_checkpoint param_disco
 echo ""
 log_info "Phase 7: Parameter Discovery"
@@ -4509,7 +4921,7 @@ fi
 # helper performs a bounded read-only GET and appends compact observations; it
 # never expands scope or turns a response difference into a finding.
 HOST_VERIFY_STATUS="ok"
-if [ -z "$RECON_COLLECT" ]; then
+if collects verify; then
 if ! python3 "$BASE_DIR/tools/recon_host_verify.py" \
     --repo-root "$BASE_DIR" \
     --target "$TARGET" \
@@ -4517,7 +4929,7 @@ if ! python3 "$BASE_DIR/tools/recon_host_verify.py" \
     HOST_VERIFY_STATUS="partial"
     log_warn "Host collision verification failed; candidate and raw recon artifacts remain available"
 fi
-HOST_VERIFY_COUNT=$(python3 - "$RECON_DIR/exposure/host_collision_summary.json" <<'PY'
+read -r HOST_VERIFY_COUNT HOST_VERIFY_SUMMARY_STATUS HOST_VERIFY_REMAINING < <(python3 - "$RECON_DIR/exposure/host_collision_summary.json" <<'PY'
 import json
 import sys
 
@@ -4526,15 +4938,18 @@ try:
         payload = json.load(handle)
 except (OSError, ValueError):
     payload = {}
-print(int(payload.get("observation_count", 0) or 0))
+print(int(payload.get("observation_count", 0) or 0),
+      "ok" if payload.get("status") == "complete" else "partial",
+      int(payload.get("remaining_count", 0) or 0))
 PY
 )
+[ "$HOST_VERIFY_STATUS" != "ok" ] || HOST_VERIFY_STATUS="$HOST_VERIFY_SUMMARY_STATUS"
 record_recon_phase \
     host_collision_verify \
     "$HOST_VERIFY_STATUS" \
     "recon/${RECON_TARGET_KEY}/exposure/host_collision_summary.json" \
     "$HOST_VERIFY_COUNT" \
-    "bounded read-only Host/SNI/default-vhost evidence; response differences remain candidates and do not expand Scope"
+    "bounded read-only Host/SNI/default-vhost evidence; remaining_candidates=$HOST_VERIFY_REMAINING; response differences remain candidates and do not expand Scope"
 fi
 HOST_PIVOT_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/host_pivot_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 AI_ASSET_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/ai_asset_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
@@ -4553,13 +4968,13 @@ emit_claude_hint \
     ai_asset_candidates        "$AI_ASSET_CANDIDATES" \
     host_ranking_hosts          "$HOST_RANKING_HOSTS" \
     asset_relation_candidates  "$ASSET_RELATION_CANDIDATES" \
-    active_probing             "host_collision_only"
+    active_probing             "$(collects verify && echo host_collision_only || echo not_run)"
 
 # ============================================================
 # Optional post-run storage guard
 # ============================================================
 RAW_ARCHIVE_STATUS="ok"
-if [ "$RECON_COLLECT" != "ffuf" ]; then
+if collects history || collects katana || [ "$RECON_COLLECT" = "discover" ]; then
 if ! publish_raw_url_archive; then
     RAW_ARCHIVE_STATUS="partial"
     log_warn "Could not merge raw URL archive; current staging remains available for recovery"
@@ -4581,12 +4996,12 @@ post_compress_raw_recon_urls "$RECON_DIR"
 # method; failures are advisory and never fail the recon run.
 ROUTE_KIND_STATUS="ok"
 ROUTE_KIND_PROBED=0
-if [ -z "$RECON_COLLECT" ]; then
+if collects verify; then
 if python3 "$BASE_DIR/tools/route_kinds.py" probe \
     --target "$TARGET" \
     --repo-root "$BASE_DIR" \
     --json > "$RECON_DIR/logs/route_kinds.json" 2>"$RECON_DIR/logs/route_kinds.err"; then
-    ROUTE_KIND_PROBED=$(python3 -c "import json,sys; print(json.load(sys.stdin).get('new_probes', 0))" < "$RECON_DIR/logs/route_kinds.json" 2>/dev/null || echo 0)
+    read -r ROUTE_KIND_PROBED ROUTE_KIND_STATUS < <(python3 -c "import json,sys; p=json.load(sys.stdin); print(p.get('new_probes', 0), 'ok' if p.get('status') == 'complete' else 'partial')" < "$RECON_DIR/logs/route_kinds.json")
     log_done "Route-kind observations recorded (new probes: $ROUTE_KIND_PROBED)"
 else
     ROUTE_KIND_STATUS="partial"

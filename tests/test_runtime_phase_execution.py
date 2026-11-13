@@ -202,8 +202,11 @@ def test_phase_busy_does_not_spawn_or_rewrite_marker(phase_root, entry, phase):
     assert state_file.read_bytes() == before
 
 
-@pytest.mark.parametrize("collector", ["katana", "ffuf"])
+@pytest.mark.parametrize("collector", list(hunt.RECON_COLLECTIONS))
 def test_hunt_deep_local_collection_preserves_flags_lock_and_seed(phase_root, collector):
+    candidate_file = phase_root / "selected inputs.txt"
+    candidate_file.write_text(URL + "\n")
+    input_file = str(candidate_file) if collector == "probe" else ""
     with ExitStack() as stack:
         for name, value in {
             "BASE_DIR": str(phase_root), "TOOLS_DIR": str(phase_root / "tools with spaces"),
@@ -213,9 +216,10 @@ def test_hunt_deep_local_collection_preserves_flags_lock_and_seed(phase_root, co
             stack.enter_context(patch.object(hunt, name, value))
         stack.enter_context(patch("observation_inventory.sync_inventory"))
         stack.enter_context(patch.object(hunt.CredentialStore, "export_to", lambda *a: None))
-        assert hunt._hunt_target_impl(URL, deep=True, recon_only=True, recon_collect=collector)["recon"]
+        assert hunt._hunt_target_impl(URL, deep=True, recon_only=True, recon_collect=collector,
+                                      recon_input=input_file)["recon"]
     record = json.loads((phase_root / "ready.json").read_text())
-    assert record["argv"] == [URL, "--deep", "--collect", collector]
+    assert record["argv"] == [URL, "--deep", "--collect", collector] + (["--input", input_file] if input_file else [])
     assert record["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == URL
     assert record["locks"] == [str(phase_root / "state" / TARGET / "locks/recon.lock")]
 
@@ -224,10 +228,12 @@ def test_hunt_deep_local_collection_preserves_flags_lock_and_seed(phase_root, co
     {"recon_collect": "ffuf"},
     {"recon_collect": "katana", "deep": True, "recon_only": True, "quick": True},
     {"recon_collect": "invalid", "deep": True, "recon_only": True},
+    {"recon_collect": "history", "deep": True, "recon_only": True, "recon_input": "missing"},
+    {"recon_collect": "probe", "deep": True, "recon_only": True, "recon_input": "missing"},
 ])
 def test_local_collection_rejects_invalid_modes_before_io(tmp_path, options):
     with patch.object(hunt, "initialize_target_store") as initialize:
-        with pytest.raises(ValueError, match="recon-collect"):
+        with pytest.raises(ValueError, match="recon-(collect|input)"):
             hunt.hunt_target(TARGET, **options)
         initialize.assert_not_called()
 

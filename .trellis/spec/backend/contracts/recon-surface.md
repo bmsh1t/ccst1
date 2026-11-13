@@ -147,8 +147,23 @@ autopilot_gate._scanner_lane_residuals(state: dict) -> list[dict]
   `recon_target_selector.collection_accounting` 读取同目标 state/plan 的成功进度；
   `recon_candidates.build_source_references` 保留原来源与行号，不确认源码归属。
 - Deep Katana 每批最多5seed，保留 `-d 3 -jc -kf all`、300秒超时及成功seed/旧发现复用。
-  局部 `--recon-collect` 只接受有 live/urls.txt 的 deep 单目标，复用锁/Auth/发布/收尾，保留 live/JS，
-  跳过其它主动采集；首次 deep 仍运行其余阶段。剩余词/seed 由 AI 选择续采，不驱动整轮循环。
+  局部 `--recon-collect` 接受 deep 单目标阶段，名称归 recon_gate.RECON_COLLECTIONS；Hunt 透传到 Shell，
+  复用锁/Auth/发布/收尾。discover 并行子域/历史源，发布已有和新候选的 DNS/HTTP 批次；probe 可独立启动。
+  katana/ffuf/config/waf 需要 live，其它阶段按各自输入执行；显式完整 Recon 保持原入口。
+  `--recon-input`/Shell `--input` 为 probe 增补候选或选择后续采集输入；selector 的显式子集不缩减库存或完成进度。
+  显式顺序按 last_selected 循环后再过滤 completed；已完成锚点仍有效，失败前缀不能饿死尾部。
+  实际 HTTP 回执先发布 raw/canonical/live，再登记成功输入；无响应保留待处理，DNS 零结果不绕过泛解析过滤。
+  httpx 关闭重定向并保留显式 scheme/port。局部成功不清空原产物或覆盖未执行阶段/旧 collector 失败。
+  首次局部调用在现有 manifest 标记未运行阶段，run_budget 只描述本调用；ready 与整轮 complete 分离。
+  probe/ports 使用原 selector schema 的独立派生实例，不新增进度 owner。collector 异常退出回收
+  自己的子树；HTTP 运行原件不属于临时清理。nmap XML 的 user hostname 保持域名→端口回流。
+  ports 只登记本轮 naabu 命中或 nmap XML 逐主机扫描回执；exit0 不能完成没有回执的输入。
+  JS/API/identity 本轮原件先保留再合并 canonical；JS 内置/链接分析复用 selector 的独立实例，
+  交集才表示一个 URL 两项都完成，响应按 URL/认证身份复用；HTTP/分析/发布失败不推进。
+  关联候选读取持久 raw URL 档案（含 gzip）。
+  verify 只复用实际成功观察；失败项在未处理项之后重试，summary.remaining_count 保留尾部。
+  同一 Host 候选超过请求预算时保留各成功 probe 的原时间，下轮只补未完成主机。
+  剩余输入由 AI 选择续采，不驱动整轮循环。
 - Shell 显式调用 `recon_gate.append_recon_record` 发布 manifest；发布失败传播到 CLI。
   `runtime_state` 仅通过同一 gate reader 读取并重算健康，不补写或修复 manifest。
 - General Nuclei consumes only the origin-deduplicated bounded derivative of
@@ -1937,8 +1952,8 @@ Recon Katana/config/platform metadata inputs, FFUF pacing and JS source provenan
 ### 2. Signatures
 
 `recon_target_selector.select_collection(target, urls, identity, state_path, plan_path,
-targets_path, limit, repo_root, origins_only=False)` uses keyword arguments;
-CLI: `--select --collection-identity ID [--origins-only]`, then existing `--record-results`.
+targets_path, limit, repo_root, origins_only=False, preferred=None)` uses keyword arguments;
+CLI: `--select --collection-identity ID [--origins-only] [--prefer FILE]`, then existing `--record-results`.
 `openapi_semantics.run(..., rate_limit=50)` / CLI `--rate-limit` gates each request start.
 
 ### 3. Contracts
@@ -1950,6 +1965,8 @@ CLI: `--select --collection-identity ID [--origins-only]`, then existing `--reco
   additions keep completed entries; removals prune only absent entries. Changed
   Scope/config/origin policy resets completion; old material remains discovery history.
   Legacy collection fingerprints containing inventory invalidate once on first selection.
+- `preferred` selects an ordered subset of the complete eligible inventory; it never
+  prunes other progress. Probe input adds candidates; JS input adds selected bundles.
 - Domain-list batches share `recon_target_selector.batch_progress` with Autopilot:
   untried inputs first, then failures in least-recently-attempted order. The existing
   failed list keeps each target's last occurrence; success removes its failure.
@@ -2002,6 +2019,8 @@ rotation/failure/reset, real loopback status/redirect/revocation, actual FFUF ti
 old batch retention, exhausted no requests and JS source binding. No real targets.
 `tests/test_recon_integrity.py` additionally exercises query outputs, collection
 inventory/config changes and real Shell batch continuation with Autopilot projections.
+It also checks asynchronous first-live publication, collector cancellation, exact
+HTTP/IPv6 receipts, port fallback and failed optional-source artifact preservation.
 Task `11-12-recon-local-acceptance` records real loopback httpx/Katana/ffuf/curl
 collection, deep JS extraction, 503 recovery and incremental seeds; it also covers
 partial exit propagation and advisory/missing-tool distinctions.

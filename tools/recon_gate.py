@@ -22,6 +22,15 @@ _PARTIAL_STATUSES = frozenset({"partial", "error", "failed", "failure", "incompl
 _BLOCKED_STATUSES = frozenset({"blocked", "skipped", "unavailable", "not_run"})
 _COMPLETE_STATUSES = frozenset({"ok", "success", "success_zero", "success-zero", "completed"})
 
+# CLI names share the existing phase ledger; this is execution vocabulary, not a plan.
+RECON_COLLECTIONS = {
+    "discover": "subdomain_enum", "probe": "http_probing", "history": "url_history",
+    "waf": "waf_fp", "origin": "origin_disco", "ports": "port_scan",
+    "katana": "url_collection", "js": "js_analysis", "ffuf": "dir_fuzz",
+    "config": "config_exposure", "api": "api_leak_detection", "openapi": "openapi_semantics",
+    "identity": "identity_cloud_intel", "verify": "host_collision_verify",
+}
+
 
 def _bounded_metadata(note: str) -> dict:
     """Parse compact bounded-sampling fields from the manifest note."""

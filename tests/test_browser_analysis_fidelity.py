@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.browser_mcp_import import import_mcp_browser_evidence
+from tools.browser_mcp_import import import_mcp_browser_evidence, _console_items
+from tools.browser_evidence import read_browser_observation_capture
 from tools.browser_surface import public_request_payload, public_url_shape, write_browser_surface
 from tools.surface import build_surface_review
 from tools.surface_index import surface_safe_preview
@@ -14,6 +15,37 @@ from tools.target_store import TargetStore
 
 
 TARGET = "browser-fixture.test"
+
+
+def test_empty_chrome_console_does_not_count_the_export_notice():
+    assert _console_items({"raw": "## Console messages\n<no console messages found>"}) == []
+
+
+@pytest.mark.parametrize("backend", ["chrome", "playwright"])
+def test_native_text_lists_preserve_requests_and_console_without_inventing_capture(tmp_path, backend):
+    url = f"https://{TARGET}/submit?mode=preview&mode=exact%20value"
+    network, console = tmp_path / "network.txt", tmp_path / "console.txt"
+    if backend == "chrome":
+        network.write_text(f"## Network requests\nShowing 1-1 of 1 (Page 1 of 1).\nreqid=4 POST {url} [200]\n")
+        console.write_text("## Console messages\nShowing 1-2 of 2 (Page 1 of 1).\n"
+                           "msgid=1 [info] fixture:ready (1 args)\nmsgid=2 [warn] fixture:warning (1 args)\n")
+    else:
+        network.write_text(f"4. [POST] {url} => [200] OK\n")
+        console.write_text("Total messages: 2 (Errors: 0, Warnings: 1)\n"
+                           "[ 123ms] [INFO] fixture:ready\n[WARNING] fixture:warning\n")
+    summary = import_mcp_browser_evidence(target=TARGET, network_path=network, console_path=console,
+        evidence_root=tmp_path / "evidence", recon_root=tmp_path / "recon")
+    artifacts = summary["artifacts"]
+    requests = json.loads(Path(artifacts["requests_json"]).read_text())["requests"]
+    assert len(requests) == 1 and requests[0]["url"] == url
+    assert requests[0]["method"] == "POST" and requests[0]["status"] == 200
+    assert requests[0]["postData"]["body_type"] == "missing"
+    public_console = json.loads(Path(artifacts["console_json"]).read_text())
+    assert public_console["count"] == summary["counts"]["console"] == 2
+    assert public_console["types"] == ["info", "warning"]
+    assert Path(artifacts["console_private"]).read_bytes() == console.read_bytes()
+    with pytest.raises(ValueError, match="text network listing is discovery only"):
+        read_browser_observation_capture(tmp_path, TARGET, summary["summary_path"])
 
 
 def test_import_preserves_exact_urls_forms_and_body_structure(tmp_path):

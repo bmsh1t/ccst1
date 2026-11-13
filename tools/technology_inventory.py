@@ -442,7 +442,7 @@ def parse_httpx_text_line(line: str) -> dict | None:
         return None
     parsed = urlparse(url)
     host = parsed.netloc or parsed.path
-    groups = [item.strip() for item in re.findall(r"\[([^\]]*)\]", text)]
+    groups = [item.strip() for item in re.findall(r"\[([^\]]*)\]", text[len(url):])]
     status = groups[0] if groups and _STATUS_RE.match(groups[0]) else ""
 
     # httpx 文本字段顺序会随模板变化，项目历史中同时存在：

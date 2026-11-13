@@ -211,14 +211,24 @@ def _load_state(
     return payload
 
 
-def _pick_batch(candidates: list[dict], completed: set[str], limit: int, after: str = "") -> list[dict]:
+def _pick_batch(candidates: list[dict], completed: set[str], limit: int, after: str = "",
+                preferred: list[str] | None = None) -> list[dict]:
     """Apply the batch budget in explicit URL order, without category preferences."""
     if limit <= 0:
         return []
     pending = sorted((item for item in candidates if item["url"] not in completed),
                      key=lambda item: item["url"])
-    return ([item for item in pending if item["url"] > after]
-            + [item for item in pending if item["url"] <= after])[:limit]
+    pending = ([item for item in pending if item["url"] > after]
+               + [item for item in pending if item["url"] <= after])
+    if preferred is not None:
+        order = list(dict.fromkeys(preferred))
+        if after in order:
+            position = order.index(after) + 1
+            order = order[position:] + order[:position]
+        positions = {url: index for index, url in enumerate(order)}
+        pending = sorted((item for item in pending if item["url"] in positions),
+                         key=lambda item: positions[item["url"]])
+    return pending[:limit]
 
 
 def batch_progress(targets: list[str], completed: list[str], failed: list[str]) -> tuple[list[str], list[str], list[str]]:
@@ -247,6 +257,7 @@ def select_targets(
     repo_root: str | Path = BASE_DIR,
     word_limit: int = 0,
     wordlist_dir: Path | None = None,
+    preferred: list[str] | None = None,
 ) -> dict:
     if limit < 1:
         raise ValueError("target selection limit must be positive")
@@ -279,12 +290,14 @@ def select_targets(
         state["word_count"] = len(words)
         state.setdefault("word_offsets", {})
     return _publish_selection(target, candidates, state, state_path, plan_path, targets_path,
-                              limit, words=words, word_limit=word_limit, wordlist_dir=wordlist_dir)
+                              limit, words=words, word_limit=word_limit, wordlist_dir=wordlist_dir,
+                              preferred=[_normalize_url(url) for url in preferred] if preferred is not None else None)
 
 
 def select_collection(*, target: str, urls: list[str], identity: str, state_path: Path,
                       plan_path: Path, targets_path: Path, limit: int,
-                      repo_root: str | Path = BASE_DIR, origins_only: bool = False) -> dict:
+                      repo_root: str | Path = BASE_DIR, origins_only: bool = False,
+                      preferred: list[str] | None = None) -> dict:
     """Select collection seeds; only published result receipts can complete them."""
     if limit < 1 or not identity.strip():
         raise ValueError("collection identity and positive limit are required")
@@ -300,20 +313,25 @@ def select_collection(*, target: str, urls: list[str], identity: str, state_path
             if not context.allows_active(url):
                 continue
         eligible.add(url)
+    if preferred is not None:
+        preferred = [url.strip() for url in preferred if url.strip()]
+        if origins_only:
+            preferred = [urlunsplit((*urlsplit(url)[:2], "", "", "")) for url in preferred]
     fingerprint = _fingerprint_urls([identity, f"origins_only={origins_only}"])
     state = _load_state(state_path, target, fingerprint, eligible,
                         scope_ref=context.source_ref or context.root_target,
                         scope_hash=context.scope_hash, fingerprint_field="collection_fingerprint")
     return _publish_selection(target, [{"url": url} for url in sorted(eligible)], state,
-                              state_path, plan_path, targets_path, limit)
+                              state_path, plan_path, targets_path, limit,
+                              preferred=preferred)
 
 
 def _publish_selection(target: str, candidates: list[dict], state: dict, state_path: Path,
                        plan_path: Path, targets_path: Path, limit: int, *,
                        words: list[bytes] | None = None, word_limit: int = 0,
-                       wordlist_dir: Path | None = None) -> dict:
+                       wordlist_dir: Path | None = None, preferred: list[str] | None = None) -> dict:
     completed = set(state["completed"])
-    selected = _pick_batch(candidates, completed, limit, str(state.get("last_selected") or ""))
+    selected = _pick_batch(candidates, completed, limit, str(state.get("last_selected") or ""), preferred)
     if words is not None:
         state["active_word_pages"] = {}
         for number, item in enumerate(selected, 1):
@@ -336,12 +354,12 @@ def _publish_selection(target: str, candidates: list[dict], state: dict, state_p
         "scope_hash": state["scope_hash"],
         **({"input_policy_sha256": state["input_policy_sha256"]} if "wordlist_sha256" in state else {}),
         "limit": limit,
-        "order": "rotating-url",
+        "order": "selected-input" if preferred is not None else "rotating-url",
         "eligible_count": len(candidates),
         "completed_count": len(completed),
         "pending_count": max(0, len(candidates) - len(completed)),
         "remaining_count": max(0, len(candidates) - len(completed) - len(selected)),
-        "exhausted": bool(candidates) and not selected and len(completed) >= len(candidates),
+        "exhausted": bool(candidates) and len(completed) >= len(candidates),
         "selected": selected,
         "generated_at": _utc_now(),
         **_word_accounting(state, len(candidates)),
@@ -521,6 +539,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wordlist-dir", type=Path, help="Run-local directory for selected word pages")
     parser.add_argument("--collection-identity")
     parser.add_argument("--origins-only", action="store_true")
+    parser.add_argument("--prefer", type=Path, help="Select from this explicit subset without dropping inventory progress")
     parser.add_argument("--results", type=Path)
     parser.add_argument("--limit", type=int, default=5)
     return parser
@@ -534,11 +553,13 @@ def main(argv: list[str] | None = None) -> int:
                                         plan_path=args.plan, repo_root=args.repo_root))
             return 0
         if args.select and args.collection_identity:
+            preferred = args.prefer.read_text(encoding="utf-8").splitlines() if args.prefer else None
             payload = select_collection(
                 target=args.target, urls=args.urls.read_text(encoding="utf-8").splitlines(),
                 identity=args.collection_identity, state_path=args.state, plan_path=args.plan,
                 targets_path=args.targets, limit=args.limit, repo_root=args.repo_root,
                 origins_only=args.origins_only,
+                preferred=preferred,
             )
         elif args.select:
             if args.wordlist is None:
@@ -555,6 +576,7 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit,
                 word_limit=args.word_limit,
                 wordlist_dir=args.wordlist_dir,
+                preferred=args.prefer.read_text(encoding="utf-8").splitlines() if args.prefer else None,
             )
         else:
             if args.results is None:

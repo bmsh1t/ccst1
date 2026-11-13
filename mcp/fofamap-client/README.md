@@ -15,9 +15,9 @@ search tools, including:
 
 This is an optional external Claude MCP capability. It is not run on every
 Recon or Autopilot round. When the server is visible in the current session,
-`/autopilot` and `/autopilot-round` may call it on an evidence-triggered asset
-intelligence lane; missing MCP availability is advisory and does not block the
-run.
+`/autopilot` and `/autopilot-round` use the opening conditions in
+`skills/autopilot-protocol.md` and the methods in the Recon module. Missing MCP
+availability is advisory and does not block other discovery.
 
 ## Setup
 
@@ -67,11 +67,12 @@ with your local FofaMap checkout path.
 
 ### 5. Verify
 
-Start Claude Code and verify the FofaMap MCP server is visible. Autopilot may
-use it only for a concrete coverage gap or target-relevant asset relationship.
+Start Claude Code and verify the FofaMap MCP server is visible. Apply the shared
+opening conditions or select it for a target-relevant information gap.
 Normalize selected results into the existing
 `recon/<target-key>/exposure/asset_relation_observations.jsonl` contract, then
-run `tools/recon_candidates.py` and refresh `/surface`/`/checkpoint`.
+run `tools/recon_candidates.py`. Actual DNS/HTTP confirmation uses the probe
+stage in `commands/recon.md`; search results alone never publish live URLs.
 
 ## Notes
 
@@ -79,4 +80,4 @@ run `tools/recon_candidates.py` and refresh `/surface`/`/checkpoint`.
 - This repo does not modify FofaMap's credential-loading logic.
 - FofaMap results remain passive asset-relation evidence; they are not direct
   scan targets until the existing target-scope check accepts them.
-- The repo does not add a second asset state owner or run FofaMap by default.
+- The MCP server retains its own credentials; Recon reuses its existing candidate and evidence owners.
